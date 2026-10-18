@@ -77,7 +77,7 @@ const translations = (() => {
     pill.querySelector('.badge').textContent = pending ? 'Translating' : failed ? 'Failed' : card.revealed ? 'Full fragment' : 'Words';
     pill.querySelector('.flip-hint').textContent = card.revealed
       ? 'Click to return to words' : 'Click to reveal the full fragment';
-    if (follow) timeline.scrollTop = timeline.scrollHeight;
+    if (follow && !phoneLayout()) timeline.scrollTop = timeline.scrollHeight;
   }
 
   function update(row, text, words) {

@@ -3,6 +3,16 @@ package com.ning.chinese;
 import android.Manifest;
 import android.app.Activity;
 import android.content.pm.PackageManager;
+import android.content.Intent;
+import android.media.projection.MediaProjectionManager;
+import android.media.projection.MediaProjectionConfig;
+import android.os.Build;
+import android.provider.Settings;
+import android.util.Base64;
+import android.webkit.JavascriptInterface;
+import android.webkit.WebResourceResponse;
+import org.json.JSONArray;
+import org.json.JSONObject;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
@@ -27,10 +37,19 @@ public final class MainActivity extends Activity {
     private PermissionRequest microphoneRequest;
     private boolean showingApp;
     private boolean foreground = true;
+    private long captureFlow;
+    private boolean captureOverlay;
+    private double captureFactor = 2;
+    private static final int AUDIO_PERMISSION = 10, OVERLAY_PERMISSION = 11, PROJECTION_PERMISSION = 12, NOTIFICATION_PERMISSION = 13;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         app = (ListeningApplication) getApplication();
+        if (state != null) {
+            captureFlow = state.getLong("captureFlow", 0);
+            captureOverlay = state.getBoolean("captureOverlay", false);
+            captureFactor = state.getDouble("captureFactor", 2);
+        }
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Color.rgb(16, 23, 21));
@@ -84,7 +103,13 @@ public final class MainActivity extends Activity {
         settings.setAllowFileAccess(false);
         settings.setAllowContentAccess(false);
         settings.setMediaPlaybackRequiresUserGesture(false);
+        web.addJavascriptInterface(new AndroidAudio(), "AndroidAudio");
         web.setWebViewClient(new WebViewClient() {
+            @Override public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                if (local(request.getUrl())) return null;
+                return new WebResourceResponse("text/plain", "UTF-8", 403, "Local app only",
+                    java.util.Collections.emptyMap(), new java.io.ByteArrayInputStream(new byte[0]));
+            }
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 return !local(request.getUrl());
             }
@@ -119,6 +144,14 @@ public final class MainActivity extends Activity {
 
     @Override public void onRequestPermissionsResult(int code, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(code, permissions, results);
+        if (code == AUDIO_PERMISSION || code == NOTIFICATION_PERMISSION) {
+            if (!currentCaptureFlow()) { captureFlow = 0; return; }
+            if (code == AUDIO_PERMISSION && (results.length == 0 || results[0] != PackageManager.PERMISSION_GRANTED)) {
+                failCapture("Audio permission was denied. Device audio capture needs audio permission.");
+            } else if (code == AUDIO_PERMISSION) requestOverlay();
+            else requestProjection();
+            return;
+        }
         if (code == 1 && microphoneRequest != null) {
             if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED)
                 microphoneRequest.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
@@ -127,14 +160,145 @@ public final class MainActivity extends Activity {
         }
     }
 
+    /** Only installed on this Activity's restricted local-app WebView. */
+    private final class AndroidAudio {
+        @JavascriptInterface public String state() {
+            JSONObject state = new JSONObject();
+            try {
+                state.put("supported", Build.VERSION.SDK_INT >= 29);
+                state.put("running", app.audioRunning);
+                state.put("requesting", app.audioRequesting);
+                PlaybackCaptureService service = app.audioService;
+                state.put("pendingSaves", service == null ? 0 : service.pendingSaves());
+                JSONArray clips = new JSONArray();
+                try {
+                    for (PlaybackStore.Clip clip : app.playbackStore().list()) {
+                        JSONObject item = new JSONObject();
+                        item.put("id", clip.id); item.put("seconds", clip.seconds); item.put("createdAt", clip.createdAt);
+                        clips.put(item);
+                    }
+                } catch (Exception error) { app.audioError = "Cannot read saved audio: " + error.getMessage(); }
+                state.put("error", app.audioError == null ? JSONObject.NULL : app.audioError);
+                state.put("clips", clips);
+            } catch (Exception error) { throw new IllegalStateException(error); }
+            return state.toString();
+        }
+        @JavascriptInterface public void requestStart(boolean overlay, double factor) {
+            if (Build.VERSION.SDK_INT < 29) { app.audioError = "Device audio requires Android 10 or later."; return; }
+            long generation = app.beginAudioRequest();
+            if (generation < 0) return;
+            double safeFactor = Double.isFinite(factor) && factor >= 0.1 ? factor : 2;
+            runOnUiThread(() -> {
+                if (generation != app.audioGeneration) return;
+                if (captureFlow != 0 || microphoneRequest != null) {
+                    app.failAudio(generation, "Finish the current permission prompt, then try device audio again.");
+                    return;
+                }
+                captureFlow = generation; captureOverlay = overlay; captureFactor = safeFactor;
+                try {
+                    if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
+                        requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, AUDIO_PERMISSION);
+                    else requestOverlay();
+                } catch (RuntimeException error) { failCapture("Cannot request audio permission: " + error.getMessage()); }
+            });
+        }
+        @JavascriptInterface public void stop() {
+            app.cancelAudio();
+            runOnUiThread(() -> {
+                PlaybackCaptureService service = app.audioService;
+                if (service != null) service.requestStop();
+                else stopService(new Intent(MainActivity.this, PlaybackCaptureService.class));
+            });
+        }
+        @JavascriptInterface public void capture(double seconds) {
+            // Reserve and snapshot before returning so an immediate stop cannot miss this capture.
+            PlaybackCaptureService service = app.audioService;
+            if (service != null) service.capture(seconds);
+            else app.audioError = "Start device audio before capturing a clip.";
+        }
+        @JavascriptInterface public String readClip(String id) {
+            try { return Base64.encodeToString(app.playbackStore().read(id), Base64.NO_WRAP); }
+            catch (Exception error) { app.audioError = error.getMessage(); return ""; }
+        }
+        @JavascriptInterface public void ackClips(String ids) {
+            try {
+                JSONArray values = new JSONArray(ids);
+                if (values.length() > PlaybackStore.MAX_CLIPS) throw new IllegalArgumentException("Too many clip IDs");
+                // Validate every value before deleting any clip.
+                for (int i = 0; i < values.length(); i++) {
+                    Object id = values.get(i);
+                    if (!(id instanceof String) || !((String) id).matches("[0-9]{13}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"))
+                        throw new IllegalArgumentException("Invalid clip ID");
+                }
+                for (int i = 0; i < values.length(); i++) app.playbackStore().ack(values.getString(i));
+            } catch (Exception error) { app.audioError = "Cannot acknowledge clips: " + error.getMessage(); }
+        }
+    }
+    private boolean currentCaptureFlow() { return captureFlow != 0 && captureFlow == app.audioGeneration && app.audioRequesting; }
+    private void failCapture(String error) {
+        app.failAudio(captureFlow, error);
+        captureFlow = 0;
+    }
+    private void requestOverlay() {
+        if (!currentCaptureFlow()) { captureFlow = 0; return; }
+        try {
+            if (captureOverlay && !Settings.canDrawOverlays(this)) {
+                startActivityForResult(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:" + getPackageName())), OVERLAY_PERMISSION);
+            } else requestNotifications();
+        } catch (RuntimeException error) { failCapture("Cannot open floating-button permission: " + error.getMessage()); }
+    }
+    private void requestNotifications() {
+        if (!currentCaptureFlow()) { captureFlow = 0; return; }
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, NOTIFICATION_PERMISSION);
+        else requestProjection();
+    }
+    private void requestProjection() {
+        if (!currentCaptureFlow()) { captureFlow = 0; return; }
+        try {
+            MediaProjectionManager manager = getSystemService(MediaProjectionManager.class);
+            Intent consent = Build.VERSION.SDK_INT >= 34
+                ? manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+                : manager.createScreenCaptureIntent();
+            startActivityForResult(consent, PROJECTION_PERMISSION);
+        } catch (RuntimeException error) { failCapture("Cannot request device audio sharing: " + error.getMessage()); }
+    }
+    @Override protected void onActivityResult(int code, int result, Intent data) {
+        super.onActivityResult(code, result, data);
+        if (code != OVERLAY_PERMISSION && code != PROJECTION_PERMISSION) return;
+        if (Build.VERSION.SDK_INT < 29) { failCapture("Device audio requires Android 10 or later."); return; }
+        if (!currentCaptureFlow()) { captureFlow = 0; return; }
+        if (code == OVERLAY_PERMISSION) {
+            if (!Settings.canDrawOverlays(this)) failCapture("Floating-button permission was denied. Enable it or turn off the floating button and try again.");
+            else requestNotifications();
+        } else if (result != RESULT_OK || data == null) failCapture("Device audio sharing was canceled.");
+        else {
+            long generation = captureFlow;
+            captureFlow = 0;
+            try {
+                Intent service = new Intent(this, PlaybackCaptureService.class)
+                    .putExtra("grant", data).putExtra("result", result).putExtra("generation", generation)
+                    .putExtra("overlay", captureOverlay).putExtra("factor", captureFactor);
+                startForegroundService(service);
+            } catch (RuntimeException error) { app.failAudio(generation, "Cannot start device audio: " + error.getMessage()); }
+        }
+    }
+    @Override protected void onSaveInstanceState(Bundle state) {
+        state.putLong("captureFlow", captureFlow);
+        state.putBoolean("captureOverlay", captureOverlay);
+        state.putDouble("captureFactor", captureFactor);
+        super.onSaveInstanceState(state);
+    }
+
     @Override protected void onPause() {
         // A microphone permission dialog may pause us without leaving the app.
-        if (microphoneRequest == null) updateForeground(false);
+        if (microphoneRequest == null && !currentCaptureFlow()) updateForeground(false);
         super.onPause();
     }
 
     @Override protected void onStop() {
-        updateForeground(false);
+        if (!currentCaptureFlow()) updateForeground(false);
         super.onStop();
     }
 
@@ -164,7 +328,8 @@ public final class MainActivity extends Activity {
     @Override protected void onDestroy() {
         app.observer = null;
         if (microphoneRequest != null) microphoneRequest.deny();
-        if (web != null) web.destroy();
+        if (isFinishing() && currentCaptureFlow()) failCapture("Device audio setup was interrupted. Try again.");
+        if (web != null) { web.removeJavascriptInterface("AndroidAudio"); web.destroy(); }
         super.onDestroy();
     }
 }

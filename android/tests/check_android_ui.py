@@ -47,7 +47,7 @@ class AndroidInterfaceTests(InterfaceTests):
         self.page.evaluate('checkModel()')
         self.page.locator('#android-licenses').click()
         self.page.wait_for_function('document.querySelector("dialog[open] pre")?.textContent === "Model attribution"')
-        self.assertEqual(self.page.url, 'http://localhost:8765/')
+        self.assertEqual(self.page.url, self.base_url + '/')
         self.assertTrue(self.page.evaluate('active && sessionOpen'))
         self.page.locator('dialog[open] button').click()
         self.assertEqual(self.page.locator('dialog[open]').count(), 0)

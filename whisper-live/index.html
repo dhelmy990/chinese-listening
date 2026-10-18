@@ -85,32 +85,98 @@
   #empty-state { padding: 48px 20px; color: var(--muted); }
   #empty-state p { width: calc(100% / 3 - 24px); margin: 0; }
   footer { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 11px; }
-  @media (max-width: 760px) { .app { padding: 18px 14px; gap: 12px; } header { flex-wrap: wrap; gap: 4px; } .settings { gap: 8px 12px; } .controls { gap: 8px; } footer { flex-wrap: wrap; } }
+  .header-actions { display: flex; gap: 8px; align-items: center; }
+  #settings-toggle, .mobile-tabs { display: none; }
+  [hidden] { display: none !important; }
+  #device-tools { display: flex; flex-wrap: wrap; gap: 8px; }
+  #device-status { color: var(--muted); font-size: 13px; margin: 0; }
+  @media (max-width: 760px) {
+    .app { padding: 12px; gap: 8px; min-height: 540px; height: 100dvh; }
+    header { align-items: center; gap: 8px; flex-shrink: 0; }
+    h1 { font-size: 20px; line-height: 1.2; letter-spacing: -.4px; }
+    header .eyebrow { display: none; }
+    .header-actions { gap: 6px; }
+    .header-actions button { padding: 10px; font-size: 13px; min-height: 44px; }
+    #settings-toggle { display: block; }
+    .settings { display: none; min-height: 0; max-height: 40dvh; overflow: auto; flex-shrink: 1; padding: 12px; border: 1px solid var(--border); border-radius: 12px; }
+    .settings.settings-open { display: grid; gap: 12px; }
+    .settings label { flex-wrap: wrap; justify-content: space-between; font-size: 14px; }
+    .settings select { max-width: 100%; min-height: 44px; }
+    .mobile-tabs { display: flex; gap: 6px; flex-shrink: 0; }
+    .mobile-tabs button { flex: 1; min-height: 44px; padding: 8px; }
+    .mobile-tabs button[aria-selected="true"] { background: #2b4234; border-color: #8dc6a3; }
+    .workspace { order: 3; min-height: 140px; overflow: hidden; border-radius: 12px; }
+    .workspace-layout { min-width: 0; width: 100%; }
+    #timeline { container-type: normal; }
+    .panel-headings { display: block; }
+    .panel-headings > div { height: auto; padding: 10px 12px; }
+    .panel-headings > div:not(:first-child) { display: none; }
+    .clip-row { display: flex; flex-direction: column; min-height: 0; gap: 6px; padding: 12px; border-bottom: 1px solid var(--border); }
+    .panel-cell, .clip-row:last-child .panel-cell { padding: 0; }
+    .pill { height: auto; border-radius: 12px; padding: 12px; }
+    .clip-text { font-size: 25px; line-height: 1.6; }
+    .pinyin { font-size: 16px; line-height: 1.6; }
+    .translation .clip-text { font-size: 18px; }
+    .translation.revealed .clip-text { font-size: 20px; }
+    .flip-hint { font-size: 13px; }
+    #empty-state { padding: 24px 16px; }
+    #empty-state p { width: auto; }
+    .middle-panel { display: none; position: static; width: auto; height: 100%; border: 0; }
+    .app[data-phone-view="words"] .middle-panel { display: flex; }
+    .app[data-phone-view="words"] #timeline { display: none; }
+    .middle-heading { height: auto; padding: 12px; }
+    #word-list { padding: 12px; }
+    .word-card { padding: 12px; }
+    .word-card button { min-width: 44px; min-height: 44px; }
+    .controls { order: 4; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 8px; background: var(--bg); flex-shrink: 0; }
+    .controls button { min-height: 48px; padding: 10px; }
+    #recall { grid-column: 2; grid-row: 1; user-select: none; -webkit-user-select: none; }
+    #retry-save, #device-tools, #status, #device-status { grid-column: 1 / -1; }
+    #device-tools button { flex: 1; min-height: 44px; font-size: 14px; }
+    #level { display: none; }
+    #status { font-size: 13px; overflow-wrap: anywhere; }
+    #vocabulary-status { order: 5; }
+    .app > .hint { display: none; }
+    footer { order: 6; justify-content: flex-end; }
+    footer > span { display: none; }
+    dialog { width: 94vw; max-width: 94vw; max-height: 90dvh; padding: 14px; }
+    dialog header { flex-wrap: wrap; }
+    dialog button { min-height: 44px; }
+    details { font-size: 13px; }
+  }
+  @media (max-width: 760px) and (max-height: 540px) {
+    .app { height: auto; min-height: 100dvh; }
+    .workspace { height: 55dvh; min-height: 180px; flex: none; }
+    .controls { position: sticky; bottom: 0; padding-block: 8px; z-index: 3; }
+  }
 </style>
 </head>
 <body>
 <main class="app">
-  <header><h1>Chinese listening</h1><span class="eyebrow">A little help when you need it</span></header>
-  <div class="settings">
+  <header><h1>Chinese listening</h1><span class="eyebrow">A little help when you need it</span><div class="header-actions"><button id="settings-toggle" aria-expanded="false" aria-controls="settings">Settings</button><button id="open-vocabulary">Vocabulary <span id="vocabulary-count">0</span></button></div></header>
+  <div class="settings" id="settings">
     <label>Whisper <select id="model-select" disabled><option value="large-v3">Large-v3</option><option value="turbo">Turbo</option></select></label>
     <label>Representation <select id="compute-select" disabled><option value="int8">INT8 · less memory</option><option value="float32">FP32 · higher precision</option></select></label>
     <label>Seconds added per second held <input id="scale" type="number" min="0.1" step="any" value="2" required></label>
     <label>Flag HSK (2021) <select id="hsk-threshold"><option value="1">1 and above</option><option value="2">2 and above</option><option value="3">3 and above</option><option value="4" selected>4 and above</option><option value="5">5 and above</option><option value="6">6 and above</option><option value="7">7–9</option><option value="8">Off</option></select></label>
+    <label id="floating-setting" hidden>Floating capture button <input id="floating-capture" type="checkbox" checked></label>
     <span id="model-detail">Connecting…</span>
   </div>
   <div class="controls">
     <button id="start" disabled>Record</button><button id="retry-save" hidden>Retry saving session</button>
     <button id="recall" disabled>Hold to transcribe</button>
-    <button id="open-vocabulary">Vocabulary <span id="vocabulary-count">0</span></button>
+    <div id="device-tools" hidden><button id="device-audio">Capture app audio</button><button id="review-captures" hidden>Review captured audio</button></div>
+    <p id="device-status" role="status" hidden></p>
     <meter id="level" min="0" max="0.1" value="0" aria-label="Microphone volume"></meter>
     <p id="status" role="status">Loading model…</p>
   </div>
   <span id="vocabulary-status" role="status"></span>
   <p class="hint">Hold Space or the button. Release for 1 + time held × factor seconds of audio (up to 15s). Space always transcribes while recording; Enter activates focused controls. Click a Chinese word to toggle its highlight and translation. Escape cancels a hold.</p>
+  <nav class="mobile-tabs" role="tablist" aria-label="Session view"><button id="listen-tab" role="tab" aria-selected="true" aria-controls="timeline">Listen</button><button id="words-tab" role="tab" aria-selected="false" aria-controls="word-list">Words</button></nav>
   <section class="workspace" aria-label="Chinese, new words, and English"><div class="workspace-layout">
     <div id="timeline" tabindex="0" role="region" aria-label="Chinese and English clips, scroll together">
       <div class="panel-headings"><div><h2>Transcriptions <span id="clip-count">0</span><span id="pending-count">0 pending</span></h2></div><div aria-hidden="true"></div><div><h2>English <span id="translation-count">0 pending</span></h2></div></div>
-      <div id="empty-state"><p>Your clips will appear here.<br>Start the microphone and release Space when you miss something.</p></div>
+      <div id="empty-state"><p>Your clips will appear here.<br>Tap Record, then hold and release the transcription button when you miss something.</p></div>
       <div id="clips"></div>
     </div>
     <aside class="middle-panel" aria-label="New words">
@@ -130,5 +196,6 @@
 <script src="/vocabulary.js"></script>
 <script src="/translations.js"></script>
 <script src="/app.js"></script>
+<script src="/device-audio.js"></script>
 </body>
 </html>

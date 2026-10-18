@@ -283,6 +283,9 @@ def create_app(model_name='large-v3', threads=8, compute_type='int8', *,
     async def browser_script(request):
         return web.FileResponse(root / 'app.js')
 
+    async def device_audio_script(request):
+        return web.FileResponse(root / 'device-audio.js')
+
     async def translation_script(request):
         return web.FileResponse(root / 'translations.js')
 
@@ -293,6 +296,7 @@ def create_app(model_name='large-v3', threads=8, compute_type='int8', *,
     app.router.add_get('/', page)
     app.router.add_get('/mic.js', audio_worklet)
     app.router.add_get('/app.js', browser_script)
+    app.router.add_get('/device-audio.js', device_audio_script)
     app.router.add_get('/vocabulary.js', vocabulary_script)
     app.router.add_get('/translations.js', translation_script)
     app.router.add_static('/data/', root / 'data')

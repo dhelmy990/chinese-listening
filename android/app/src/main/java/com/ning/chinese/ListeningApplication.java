@@ -23,6 +23,36 @@ public final class ListeningApplication extends Application {
     public volatile boolean failed;
     public String token;
     public Observer observer;
+    public volatile boolean audioRunning;
+    public volatile boolean audioRequesting;
+    public volatile String audioError;
+    public volatile long audioGeneration;
+    public volatile PlaybackCaptureService audioService;
+    private PlaybackStore playbackStore;
+
+    public synchronized PlaybackStore playbackStore() throws java.io.IOException {
+        if (playbackStore == null) playbackStore = new PlaybackStore(new File(getFilesDir(), "playback-clips"));
+        return playbackStore;
+    }
+
+    public synchronized long beginAudioRequest() {
+        if (audioRunning || audioRequesting || audioService != null) return -1;
+        audioRequesting = true;
+        audioError = null;
+        return ++audioGeneration;
+    }
+
+    public synchronized void cancelAudio() {
+        ++audioGeneration;
+        audioRequesting = false;
+        audioRunning = false;
+    }
+
+    public synchronized void failAudio(long generation, String error) {
+        if (audioGeneration != generation) return;
+        audioRequesting = false;
+        audioError = error;
+    }
 
     @Override public void onCreate() {
         super.onCreate();

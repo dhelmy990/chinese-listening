@@ -14,14 +14,17 @@ let context, stream, source, mic, socket, flush;
 let active = false, failed = false;
 let fixedModel = false;
 let androidForeground = true, microphoneGeneration = 0;
-let sessionOpen = false, endingSession = false, savingSession = false;
+let sessionOpen = false, endingSession = false, savingSession = false, stoppingInput = false;
 let hasAudio = false;
+let audioInput = 'microphone';
 let holdStartedAt = null, holdTimer, holdFactor, holdSource;
 
 function setAndroidForeground(visible) {
   androidForeground = visible;
   if (!visible) {
     microphoneGeneration++;
+    cancelHold();
+    if (audioInput === 'playback') return;
     if (sessionOpen && !endingSession) stopRecording();
     else if (!sessionOpen) releaseMicrophone();
   }
@@ -42,8 +45,10 @@ function cancelHold() {
 
 function showListeningStatus() {
   document.querySelector('#pending-count').textContent = `${pendingClips.size} pending`;
-  if (active && holdStartedAt === null) status.textContent = 'Listening. Hold Space whenever you miss something.';
+  if (active && holdStartedAt === null) status.textContent = audioInput === 'playback' ? 'Device audio session. Hold and release to capture recent audio.' : 'Listening. Hold and release to transcribe recent audio.';
 }
+
+function phoneLayout() { return matchMedia('(max-width: 760px)').matches; }
 
 function nearBottom() {
   return timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 64;
@@ -69,7 +74,9 @@ function addClip(id, seconds) {
   document.querySelector('#empty-state').hidden = true;
   clips.append(row);
   document.querySelector('#clip-count').textContent = clips.children.length;
-  if (follow) timeline.scrollTop = timeline.scrollHeight;
+  if (follow) timeline.scrollTop = phoneLayout()
+    ? Math.max(0, row.offsetTop - document.querySelector('.panel-headings').offsetHeight)
+    : timeline.scrollHeight;
   showListeningStatus();
 }
 
@@ -91,6 +98,7 @@ function updateClip(result) {
       pill.querySelector('details').hidden = false;
       pill.querySelector('.timing').textContent = `${result.model} / ${result.compute_type} · Audio ${result.audio_seconds}s · Processing ${result.compute_seconds}s · Server delay ${result.delay_seconds}s · Release to result ${((performance.now() - clip.startedAt) / 1000).toFixed(2)}s`;
     }
+    window.deviceAudio?.result(result);
     pendingClips.delete(result.id);
     if (result.error || !result.text?.trim()) {
       const translation = clip.row.querySelector('.translation');
@@ -100,7 +108,7 @@ function updateClip(result) {
     }
     showListeningStatus();
   }
-  if (follow) timeline.scrollTop = timeline.scrollHeight;
+  if (follow && !phoneLayout()) timeline.scrollTop = timeline.scrollHeight;
 }
 
 function failPending(message) {
@@ -114,6 +122,10 @@ function parseLastNSeconds(seconds = 1) {
     return;
   }
   cancelHold();
+  if (audioInput === 'playback') {
+    window.deviceAudio?.capture(seconds);
+    return;
+  }
   const id = nextClipId++;
   addClip(id, seconds);
   // Flush the worklet's current batch before marking the clip boundary on the server.
@@ -170,6 +182,15 @@ window.addEventListener('keyup', event => {
 window.addEventListener('blur', cancelHold);
 document.addEventListener('focusin', () => { if (!vocabulary.restoringFocus) cancelHold(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) cancelHold(); });
+
+async function flushMicrophone() {
+  if (!mic) return;
+  await new Promise(resolve => {
+    flush = resolve;
+    mic.port.postMessage('flush');
+    setTimeout(resolve, 500);
+  });
+}
 
 async function releaseMicrophone() {
   cancelHold();
@@ -255,8 +276,57 @@ modelSelect.onchange = computeSelect.onchange = async () => {
   checkModel();
 };
 
+async function openSessionConnection(checkReady = () => {}) {
+  if (sessionOpen && socket?.readyState === WebSocket.OPEN) return;
+  socket = new WebSocket(`ws://${location.host}/listen`);
+  await new Promise((resolve, reject) => {
+    socket.onopen = resolve;
+    socket.onerror = () => reject(new Error('Could not connect. Model may be busy in another tab.'));
+  });
+  checkReady();
+  const connection = socket;
+  let finished = false;
+  const continuing = sessionOpen;
+  active = true;
+  sessionOpen = true;
+  if (!continuing) vocabulary.beginSession();
+  socket.onmessage = event => {
+    const result = JSON.parse(event.data);
+    if (result.done) { finished = true; return; }
+    if (result.error && result.id === undefined) {
+      failed = true;
+      active = false;
+      recall.disabled = true;
+      status.textContent = result.error;
+      failPending(result.error);
+      socket.close();
+      return;
+    }
+    updateClip(result);
+  };
+  socket.onclose = async () => {
+    if (socket !== connection) return;
+    const unexpected = active || !finished;
+    active = false;
+    recall.disabled = true;
+    await releaseMicrophone();
+    failPending('Connection closed before this clip finished.');
+    if (endingSession) {
+      await saveCompletedSession();
+    } else {
+      start.disabled = false;
+      start.textContent = 'End session & save';
+      if (!failed) status.textContent = unexpected
+        ? 'Connection closed. End this session to save the words received so far.' : 'Recording stopped. End this session to save.';
+    }
+  };
+  start.disabled = false;
+  start.textContent = 'Stop & save';
+}
+
 start.onclick = async () => {
   if (sessionOpen) { await stopRecording(); return; }
+  audioInput = 'microphone';
   const generation = ++microphoneGeneration;
   const checkForeground = () => {
     if (!androidForeground || generation !== microphoneGeneration) throw new Error('Recording cancelled because the app left the foreground.');
@@ -265,54 +335,19 @@ start.onclick = async () => {
   failed = false;
   hasAudio = false;
   status.textContent = 'Opening microphone…';
+  window.deviceAudio?.poll();
   try {
-    stream = await navigator.mediaDevices.getUserMedia({audio: {channelCount: 1, echoCancellation: true, noiseSuppression: true}});
+    const acquired = await navigator.mediaDevices.getUserMedia({audio: {channelCount: 1, echoCancellation: true, noiseSuppression: true}});
+    if (!androidForeground || generation !== microphoneGeneration) acquired.getTracks().forEach(track => track.stop());
     checkForeground();
+    stream = acquired;
     context = new AudioContext({sampleRate: 16000});
     if (context.sampleRate !== 16000) throw new Error('This browser cannot capture at 16 kHz. Try Chrome.');
     await context.resume();
     checkForeground();
     await context.audioWorklet.addModule('/mic.js');
     checkForeground();
-    socket = new WebSocket(`ws://${location.host}/listen`);
-    await new Promise((resolve, reject) => {
-      socket.onopen = resolve;
-      socket.onerror = () => reject(new Error('Could not connect. Model may be busy in another tab.'));
-    });
-    checkForeground();
-    let finished = false;
-    active = true;
-    sessionOpen = true;
-    vocabulary.beginSession();
-    socket.onmessage = event => {
-      const result = JSON.parse(event.data);
-      if (result.done) { finished = true; return; }
-      if (result.error && result.id === undefined) {
-        failed = true;
-        active = false;
-        recall.disabled = true;
-        status.textContent = result.error;
-        failPending(result.error);
-        socket.close();
-        return;
-      }
-      updateClip(result);
-    };
-    socket.onclose = async () => {
-      const unexpected = active || !finished;
-      active = false;
-      recall.disabled = true;
-      await releaseMicrophone();
-      failPending('Connection closed before this clip finished.');
-      if (endingSession) {
-        await saveCompletedSession();
-      } else {
-        start.disabled = false;
-        start.textContent = 'End session & save';
-        if (!failed) status.textContent = unexpected
-          ? 'Connection closed. End this session to save the words received so far.' : 'Recording stopped. End this session to save.';
-      }
-    };
+    await openSessionConnection(checkForeground);
     source = context.createMediaStreamSource(stream);
     mic = new AudioWorkletNode(context, 'microphone');
     mic.port.onmessage = event => {
@@ -338,6 +373,7 @@ start.onclick = async () => {
     start.blur();
     showListeningStatus();
   } catch (error) {
+    if (generation !== microphoneGeneration && audioInput === 'playback') return;
     failed = true;
     active = false;
     socket?.close();
@@ -352,12 +388,14 @@ start.onclick = async () => {
 };
 
 async function saveCompletedSession() {
-  if (savingSession || !endingSession) return;
+  if (savingSession || stoppingInput || !endingSession) return;
   savingSession = true;
   retrySave.hidden = true;
   status.textContent = 'Finishing translations and saving this session…';
   try {
     await vocabulary.saveSession();
+    window.deviceAudio?.saved();
+    audioInput = 'microphone';
     sessionOpen = endingSession = false;
     computeSelect.disabled = modelSelect.disabled = fixedModel;
     start.disabled = false;
@@ -373,23 +411,43 @@ async function saveCompletedSession() {
 retrySave.onclick = saveCompletedSession;
 
 async function stopRecording() {
+  if (endingSession) return;
   active = false;
   endingSession = true;
-  vocabulary.endSession();
   cancelHold();
   recall.disabled = start.disabled = true;
-  status.textContent = 'Microphone stopped. Finishing queued clips…';
+  status.textContent = 'Audio stopped. Finishing queued clips…';
+  if (audioInput === 'playback') {
+    stoppingInput = true;
+    try { await window.deviceAudio?.finish(); }
+    catch (error) { status.textContent = `Saved audio remains on this device: ${error.message}`; }
+    finally { stoppingInput = false; }
+  }
+  vocabulary.endSession();
   source?.disconnect();
   stream?.getTracks().forEach(track => track.stop());
-  if (mic) {
-    await new Promise(resolve => {
-      flush = resolve;
-      mic.port.postMessage('flush');
-      setTimeout(resolve, 500);
-    });
-  }
+  await flushMicrophone();
   await releaseMicrophone();
-  if (socket.readyState === WebSocket.OPEN) socket.send('stop');
-  else if (socket.readyState === WebSocket.CLOSED) await saveCompletedSession();
+  if (socket?.readyState === WebSocket.OPEN) socket.send('stop');
+  else await saveCompletedSession();
 }
 checkModel();
+
+const settingsToggle = document.querySelector('#settings-toggle');
+settingsToggle.onclick = () => {
+  const open = document.querySelector('.settings').classList.toggle('settings-open');
+  settingsToggle.setAttribute('aria-expanded', String(open));
+};
+for (const name of ['listen', 'words']) {
+  const button = document.querySelector(`#${name}-tab`);
+  button.onclick = () => {
+    document.querySelector('.app').dataset.phoneView = name;
+    for (const tab of document.querySelectorAll('.mobile-tabs button')) tab.setAttribute('aria-selected', String(tab === button));
+  };
+  button.onkeydown = event => {
+    if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+    event.preventDefault();
+    const next = document.querySelector(name === 'listen' ? '#words-tab' : '#listen-tab');
+    next.click(); next.focus();
+  };
+}

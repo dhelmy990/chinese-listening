@@ -1,12 +1,16 @@
 """Chrome interaction checks with microphone capture and intercepted inference.
 Run with a Python environment containing playwright; uses installed Google Chrome.
-No server, model weights, or recorded audio fixture is needed.
+A temporary static asset server serves AudioWorklet modules; inference is intercepted.
+No model weights or recorded audio fixture is needed.
 """
 import json
 from pathlib import Path
 import re
 import unittest
 import tempfile
+import threading
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright
@@ -15,11 +19,23 @@ from sessions import read_history, save_session, validate_session
 ROOT = Path(__file__).resolve().parent
 
 
+class AssetsHandler(SimpleHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+
 class InterfaceTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.database = Path(directory.name) / 'sessions.sqlite3'
+        # Chrome may fetch AudioWorklet modules outside Playwright's route interception.
+        self.asset_server = ThreadingHTTPServer(('127.0.0.1', 0), partial(AssetsHandler, directory=str(ROOT)))
+        self.asset_thread = threading.Thread(target=self.asset_server.serve_forever, daemon=True)
+        self.asset_thread.start()
+        self.addCleanup(self.asset_server.server_close)
+        self.addCleanup(self.asset_server.shutdown)
+        self.base_url = f'http://127.0.0.1:{self.asset_server.server_port}'
         self.saved_requests = []
         self.save_failures = 0
         self.playwright = sync_playwright().start()
@@ -35,9 +51,9 @@ class InterfaceTests(unittest.TestCase):
         self.translation_requests = []
         self.hold_translations = False
         self.page.on('pageerror', lambda error: self.errors.append(str(error)))
-        self.page.route('http://localhost:8765/**', self.route)
+        self.context.route(self.base_url + '/**', self.route)
         self.page.route_web_socket(re.compile(r'.*/listen.*'), self.connect)
-        self.page.goto('http://localhost:8765')
+        self.page.goto(self.base_url)
         self.page.wait_for_function('!document.querySelector("#start").disabled')
         self.assertEqual(self.page.locator('#mode-select').count(), 0)
         self.page.locator('#start').click()
@@ -65,7 +81,7 @@ class InterfaceTests(unittest.TestCase):
                 route.fulfill(status=503, body='Save response lost; retry.')
             else:
                 route.fulfill(json=dict(id=data['id']))
-        elif path in ('/', '/app.js', '/mic.js', '/vocabulary.js', '/translations.js'):
+        elif path in ('/', '/app.js', '/mic.js', '/vocabulary.js', '/translations.js', '/device-audio.js'):
             route.fulfill(path=str(ROOT / ('index.html' if path == '/' else path[1:])),
                           content_type='text/html' if path == '/' else 'text/javascript')
         else:
@@ -301,7 +317,7 @@ class InterfaceTests(unittest.TestCase):
         (ROOT / '.checks').mkdir(exist_ok=True)
         self.page.screenshot(path=str(ROOT / '.checks' / 'two-panels.png'), full_page=True)
         self.page.set_viewport_size({'width': 390, 'height': 844})
-        self.assertTrue(self.page.evaluate("document.querySelector('.workspace').scrollWidth > document.querySelector('.workspace').clientWidth"))
+        self.assertTrue(self.page.evaluate("document.querySelector('.workspace').scrollWidth <= document.querySelector('.workspace').clientWidth"))
         self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'))
         self.assertEqual(self.errors, [])
 
@@ -478,8 +494,8 @@ class InterfaceTests(unittest.TestCase):
         other = self.context.new_page()
         self.addCleanup(other.close)
         other.add_init_script("window.addEventListener('storage', event => event.stopImmediatePropagation())")
-        other.route('http://localhost:8765/**', self.route)
-        other.goto('http://localhost:8765')
+        other.route(self.base_url + '/**', self.route)
+        other.goto(self.base_url)
         self.page.wait_for_function('!document.querySelector("#start").disabled')
         self.page.locator('#start').click()
         self.page.wait_for_function('!document.querySelector("#recall").disabled')
