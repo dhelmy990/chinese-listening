@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Chinese · Whisper</title>
+<style>
+  body { max-width: 800px; margin: 48px auto; padding: 0 24px; font: 17px/1.6 system-ui, sans-serif; color: #17312d; background: #f7f8f4; }
+  h1 { font-size: 30px; margin-bottom: 4px; }
+  p { margin: 8px 0 20px; }
+  button { padding: 10px 24px; font: inherit; border: 1px solid #42695e; border-radius: 8px; cursor: pointer; }
+  #start { background: #225748; color: white; }
+  button:disabled { opacity: .45; cursor: default; }
+  #status, #model { color: #52665f; }
+  select { font: inherit; color: inherit; border: 1px solid #d4dfd9; border-radius: 6px; background: white; padding: 2px 6px; }
+  #status { min-height: 2em; }
+  #transcript { min-height: 220px; background: white; border: 1px solid #d4dfd9; border-radius: 12px; padding: 24px; margin: 20px 0; }
+  .phrase { font-size: 26px; line-height: 1.7; overflow-wrap: anywhere; }
+  .partial { color: #7d8984; }
+  small { display: block; color: #52665f; font-size: 13px; }
+  .phrase + .phrase { margin-top: 16px; }
+  #level { width: 110px; vertical-align: middle; margin-left: 12px; }
+</style>
+<h1>Live Chinese</h1>
+<p id="model">Whisper <select id="model-select" aria-label="Whisper model" disabled>
+  <option value="large-v3">Large-v3</option><option value="turbo">Turbo</option>
+</select> <span id="model-detail">Connecting…</span></p>
+<button id="start" disabled>Start microphone</button>
+<button id="stop" disabled>Stop</button>
+<meter id="level" min="0" max="0.1" value="0" aria-label="Microphone volume"></meter>
+<p id="status" role="status">Loading model. The first run downloads the weights.</p>
+<div id="transcript" lang="zh-Hans" aria-label="Chinese transcript"></div>
+<p>Speak Mandarin and pause briefly between sentences. Gray text is provisional;
+  it is replaced as more audio arrives. Pause for about 0.7 seconds to finalize.</p>
+<small>Audio and transcription stay on this laptop. Updates are attempted every 2 seconds;
+  actual speed depends on inference. Long speech is split at 15 seconds.</small>
+<small>“Result delay” measures queue + processing after the server receives a snapshot.
+  It excludes the time spent collecting speech. Processing/audio below 1× means that
+  snapshot took less time to process than its audio duration; repeated partials add extra work.</small>
+<script>
+const start = document.querySelector('#start');
+const stop = document.querySelector('#stop');
+const status = document.querySelector('#status');
+const transcript = document.querySelector('#transcript');
+const level = document.querySelector('#level');
+const modelSelect = document.querySelector('#model-select');
+let context, stream, source, mic, socket, flush;
+let active = false, failed = false;
+
+async function releaseMicrophone() {
+  stream?.getTracks().forEach(track => track.stop());
+  source?.disconnect();
+  mic?.disconnect();
+  if (context && context.state !== 'closed') await context.close();
+  context = stream = source = mic = null;
+  level.value = 0;
+}
+
+async function checkModel() {
+  try {
+    const data = await fetch('/status').then(response => response.json());
+    modelSelect.value = data.model;
+    document.querySelector('#model-detail').textContent = `· ${data.device} · 简体中文`;
+    modelSelect.disabled = data.loading || data.busy;
+    start.disabled = !data.ready || data.busy;
+    if (data.error) {
+      status.textContent = `Model failed: ${data.error}. Choose a model to retry.`;
+      return;
+    }
+    if (data.ready && !data.busy) {
+      start.disabled = false;
+      status.textContent = 'Ready. Allow microphone access when prompted.';
+      return;
+    }
+    status.textContent = data.loading ? 'Loading model. First use downloads its weights…' : 'Microphone is busy in another tab.';
+  } catch (error) {
+    status.textContent = error.message;
+  }
+  setTimeout(checkModel, 1500);
+}
+
+modelSelect.onchange = async () => {
+  modelSelect.disabled = start.disabled = true;
+  status.textContent = 'Switching model…';
+  try {
+    const response = await fetch('/model', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({model: modelSelect.value}),
+    });
+    if (!response.ok) throw new Error(await response.text());
+  } catch (error) {
+    status.textContent = error.message;
+    setTimeout(checkModel, 1500);
+    return;
+  }
+  checkModel();
+};
+
+start.onclick = async () => {
+  modelSelect.disabled = start.disabled = true;
+  failed = false;
+  status.textContent = 'Opening microphone…';
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({audio: {channelCount: 1, echoCancellation: true, noiseSuppression: true}});
+    context = new AudioContext({sampleRate: 16000});
+    if (context.sampleRate !== 16000) throw new Error('This browser cannot capture at 16 kHz. Try Chrome.');
+    await context.resume();
+    await context.audioWorklet.addModule('/mic.js');
+    socket = new WebSocket(`ws://${location.host}/listen`);
+    await new Promise((resolve, reject) => {
+      socket.onopen = resolve;
+      socket.onerror = () => reject(new Error('Could not connect. Model may be busy in another tab.'));
+    });
+    transcript.replaceChildren();
+    active = true;
+    socket.onmessage = event => {
+      const result = JSON.parse(event.data);
+      if (result.error) {
+        failed = true;
+        status.textContent = result.error;
+        socket.close();
+        return;
+      }
+      if (result.done) return;
+      let row = document.getElementById(`phrase-${result.id}`);
+      if (!row) {
+        row = document.createElement('div');
+        row.id = `phrase-${result.id}`;
+        row.append(document.createElement('span'), document.createElement('small'));
+        transcript.append(row);
+      }
+      row.className = `phrase ${result.final ? '' : 'partial'}`;
+      row.firstChild.textContent = result.text || (result.final ? '(No speech recognized)' : '…');
+      row.lastChild.textContent = `${result.final ? 'Final' : 'Provisional'} · Audio ${result.audio_seconds}s · Processing ${result.compute_seconds}s · Result delay ${result.delay_seconds}s · Processing/audio ${result.rtf}×`;
+      if (active) status.textContent = 'Listening… Speak another sentence whenever you’re ready.';
+    };
+    socket.onclose = async event => {
+      const unexpected = active;
+      active = false;
+      stop.disabled = true;
+      await releaseMicrophone();
+      modelSelect.disabled = start.disabled = false;
+      if (!failed) status.textContent = unexpected ? 'Connection closed. Check the server and try again.' : 'Stopped. All queued phrases processed.';
+    };
+    source = context.createMediaStreamSource(stream);
+    mic = new AudioWorkletNode(context, 'microphone');
+    mic.port.onmessage = event => {
+      if (event.data === 'flushed') { flush?.(); return; }
+      const samples = event.data;
+      let energy = 0;
+      for (const sample of samples) energy += sample * sample;
+      level.value = Math.sqrt(energy / samples.length);
+      if (socket.readyState === WebSocket.OPEN) socket.send(samples.buffer);
+    };
+    source.connect(mic);
+    mic.connect(context.destination); // The worklet outputs silence, so there is no feedback.
+    stop.disabled = false;
+    status.textContent = 'Listening…';
+  } catch (error) {
+    failed = true;
+    active = false;
+    socket?.close();
+    await releaseMicrophone();
+    modelSelect.disabled = start.disabled = false;
+    stop.disabled = true;
+    status.textContent = error.message;
+  }
+};
+
+stop.onclick = async () => {
+  active = false;
+  stop.disabled = true;
+  status.textContent = 'Microphone stopped. Finishing queued speech…';
+  source.disconnect();
+  stream.getTracks().forEach(track => track.stop());
+  await new Promise(resolve => {
+    flush = resolve;
+    mic.port.postMessage('flush');
+    setTimeout(resolve, 500);
+  });
+  await releaseMicrophone();
+  if (socket.readyState === WebSocket.OPEN) socket.send('stop');
+};
+checkModel();
+</script>
+</html>
