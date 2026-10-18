@@ -2,23 +2,30 @@
 import argparse
 import asyncio
 import json
+import secrets
+import sqlite3
 from pathlib import Path
 import time
 
 from aiohttp import web, WSMsgType
-import ctranslate2
 import numpy as np
 from opencc import OpenCC
 from pypinyin import lazy_pinyin, Style
-from translation import load_translator
+from sessions import validate_session, save_session, read_history
 
 ROOT = Path(__file__).resolve().parent
+SESSION_DB = ROOT / 'sessions.sqlite3'
 RATE = 16000
 MAX_SECONDS = 15
 MAX_PENDING = 8
 SIMPLIFIED = OpenCC('t2s')
 MODELS = ('large-v3', 'turbo')
 COMPUTE_TYPES = ('int8', 'float32')
+
+
+def load_translator():
+    from translation import load_translator as load
+    return load()
 
 
 def transcribe(model, job):
@@ -38,9 +45,27 @@ def transcribe(model, job):
                 rtf=round(elapsed / duration, 2))
 
 
-def create_app(model_name='large-v3', threads=8, compute_type='int8'):
-    app = web.Application()
-    supported = ctranslate2.get_supported_compute_types('cpu')
+def create_app(model_name='large-v3', threads=8, compute_type='int8', *,
+               runtime=None, root=None, database=None, auth_token=None):
+    root = Path(root) if root is not None else ROOT
+    database = Path(database) if database is not None else SESSION_DB
+
+    @web.middleware
+    async def authenticate(request, handler):
+        if auth_token is not None and not secrets.compare_digest(
+                request.cookies.get('ning_session', ''), auth_token):
+            raise web.HTTPForbidden(text='Open this page from the Android application.')
+        return await handler(request)
+
+    app = web.Application(middlewares=[authenticate])
+    if runtime is None:
+        import ctranslate2
+        supported = ctranslate2.get_supported_compute_types('cpu')
+    else:
+        supported = {'int8'}
+    models = ('turbo',) if runtime is not None else MODELS
+    if model_name not in models:
+        raise ValueError('Unsupported model.')
     compute_types = [kind for kind in COMPUTE_TYPES if kind in supported]
     if compute_type not in compute_types:
         raise ValueError(f'Unsupported CPU representation. Choose from {compute_types}.')
@@ -49,6 +74,27 @@ def create_app(model_name='large-v3', threads=8, compute_type='int8'):
     translator = None
     translation_lock = asyncio.Lock()
     translation_requests = 0
+
+    async def vocabulary_history(request):
+        try:
+            return web.json_response(await asyncio.to_thread(read_history, database))
+        except (sqlite3.Error, OSError):
+            raise web.HTTPServiceUnavailable(text='Could not read the local vocabulary database.')
+
+    async def complete_session(request):
+        check_origin(request)
+        try:
+            session = validate_session(await request.json())
+        except (ValueError, TypeError) as error:
+            raise web.HTTPBadRequest(text=str(error))
+        for word in session['words']:
+            if not word['pinyin']:
+                word['pinyin'] = ' '.join(lazy_pinyin(word['word'], style=Style.TONE))
+        try:
+            await asyncio.to_thread(save_session, database, session)
+        except (sqlite3.Error, OSError):
+            raise web.HTTPServiceUnavailable(text='Session could not be saved. Retry when local storage is available.')
+        return web.json_response(dict(id=session['id']))
 
     async def translate(request):
         nonlocal translator, translation_requests
@@ -68,7 +114,8 @@ def create_app(model_name='large-v3', threads=8, compute_type='int8'):
             # Independent of Whisper: translation and recognition can run concurrently.
             async with translation_lock:
                 if translator is None:
-                    translator = await asyncio.to_thread(load_translator)
+                    translator = await asyncio.to_thread(
+                        runtime.load_translator if runtime is not None else load_translator)
                 started = time.monotonic()
                 output = await asyncio.to_thread(translator, text.strip())
             return web.json_response(dict(text=output, model='OPUS-MT zh-en',
@@ -81,12 +128,15 @@ def create_app(model_name='large-v3', threads=8, compute_type='int8'):
 
     async def load_model(name, compute_type):
         try:
-            from faster_whisper import WhisperModel
             print(f'Loading {name} on CPU ({compute_type}). First run downloads weights.', flush=True)
-            state['model'] = await asyncio.to_thread(
-                WhisperModel, name, device='cpu', compute_type=compute_type,
-                cpu_threads=threads, download_root=str(ROOT / '.models'),
-            )
+            if runtime is not None:
+                state['model'] = await asyncio.to_thread(runtime.load_model, name, compute_type, threads)
+            else:
+                from faster_whisper import WhisperModel
+                state['model'] = await asyncio.to_thread(
+                    WhisperModel, name, device='cpu', compute_type=compute_type,
+                    cpu_threads=threads, download_root=str(root / '.models'),
+                )
             print('Model ready. Open http://localhost:8765', flush=True)
         except Exception as error:
             state['error'] = str(error)
@@ -103,6 +153,7 @@ def create_app(model_name='large-v3', threads=8, compute_type='int8'):
         return web.json_response(dict(ready=state['model'] is not None,
                                       model=state['name'], error=state['error'],
                                       compute_type=state['compute_type'], compute_types=compute_types,
+                                      models=models, fixed_model=runtime is not None,
                                       loading=state['loading'], busy=state['busy'],
                                       device=f'CPU · {threads} threads'))
 
@@ -118,7 +169,7 @@ def create_app(model_name='large-v3', threads=8, compute_type='int8'):
             compute_type = settings.get('compute_type', state['compute_type'])
         except (ValueError, KeyError, TypeError):
             raise web.HTTPBadRequest(text='Expected a model name.')
-        if name not in MODELS:
+        if name not in models:
             raise web.HTTPBadRequest(text='Choose large-v3 or turbo.')
         if compute_type not in compute_types:
             raise web.HTTPBadRequest(text=f'Unsupported CPU representation. Choose from {compute_types}.')
@@ -224,21 +275,32 @@ def create_app(model_name='large-v3', threads=8, compute_type='int8'):
         return ws
 
     async def page(request):
-        return web.FileResponse(ROOT / 'index.html')
+        return web.FileResponse(root / 'index.html')
 
     async def audio_worklet(request):
-        return web.FileResponse(ROOT / 'mic.js')
+        return web.FileResponse(root / 'mic.js')
 
     async def browser_script(request):
-        return web.FileResponse(ROOT / 'app.js')
+        return web.FileResponse(root / 'app.js')
+
+    async def translation_script(request):
+        return web.FileResponse(root / 'translations.js')
+
+    async def vocabulary_script(request):
+        return web.FileResponse(root / 'vocabulary.js')
 
     app.cleanup_ctx.append(lifecycle)
     app.router.add_get('/', page)
     app.router.add_get('/mic.js', audio_worklet)
     app.router.add_get('/app.js', browser_script)
+    app.router.add_get('/vocabulary.js', vocabulary_script)
+    app.router.add_get('/translations.js', translation_script)
+    app.router.add_static('/data/', root / 'data')
     app.router.add_get('/status', status)
     app.router.add_post('/model', switch_model)
     app.router.add_post('/translate', translate)
+    app.router.add_get('/vocabulary', vocabulary_history)
+    app.router.add_post('/sessions', complete_session)
     app.router.add_get('/listen', microphone)
     return app
 

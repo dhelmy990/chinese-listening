@@ -1,0 +1,72 @@
+plugins {
+    id 'com.android.application'
+    id 'com.chaquo.python'
+}
+
+android {
+    namespace 'com.ning.chinese'
+    compileSdk 36
+    ndkVersion '27.2.12479018'
+    defaultConfig {
+        applicationId 'com.ning.chinese'
+        minSdk 24
+        targetSdk 35
+        versionCode 1
+        versionName '1.0'
+        ndk { abiFilters(project.findProperty('abi') ?: 'arm64-v8a') }
+        externalNativeBuild {
+            cmake {
+                targets 'ning_inference'
+                arguments '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON'
+            }
+        }
+    }
+    externalNativeBuild {
+        cmake { path 'src/main/cpp/CMakeLists.txt'; version '3.22.1' }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    buildFeatures { buildConfig true }
+    sourceSets.main.assets.srcDir layout.buildDirectory.dir('generated/sharedAssets')
+}
+
+chaquopy {
+    defaultConfig {
+        version '3.13'
+        if (project.hasProperty('buildPython')) buildPython project.property('buildPython')
+        extractPackages 'ning_android', 'opencc', 'pypinyin'
+        pip {
+            install '../wheels/aiohttp-3.14.5-py3-none-any.whl'
+            install 'numpy==1.26.2'
+            install 'opencc-python-reimplemented==0.1.7'
+            install 'pypinyin==0.55.0'
+            install 'certifi==2026.7.22'
+        }
+    }
+    sourceSets.main.srcDir layout.buildDirectory.dir('generated/sharedPython')
+}
+
+tasks.register('syncSharedAssets', Sync) {
+    from('../../whisper-live') {
+        include 'index.html', '*.js', 'data/**'
+        into 'web'
+    }
+    from('../THIRD_PARTY_NOTICES.md') { into 'web/data'; rename { 'android-notices.txt' } }
+    into layout.buildDirectory.dir('generated/sharedAssets')
+}
+tasks.register('syncSharedPython', Sync) {
+    from('../../whisper-live') { include 'server.py', 'sessions.py' }
+    into layout.buildDirectory.dir('generated/sharedPython')
+}
+tasks.configureEach {
+    if (name.contains('Assets') && name != 'syncSharedAssets') dependsOn 'syncSharedAssets'
+    if (name.contains('Python') && name != 'syncSharedPython') dependsOn 'syncSharedPython'
+    if (name.toLowerCase().contains('lint')) dependsOn 'syncSharedAssets', 'syncSharedPython'
+}
+
+dependencies {
+    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.25.0'
+    testImplementation 'junit:junit:4.13.2'
+}

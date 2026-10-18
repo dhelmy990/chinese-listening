@@ -7,6 +7,8 @@ No transcription API, account, or API key is needed.
 
 ## Run
 
+From the repository root: `just run`. Ctrl+C stops the server.
+
 From this folder (Python 3.10+):
 
 ```sh
@@ -17,7 +19,7 @@ python3 -m venv .venv
 
 Or with `uv`: `uv venv && uv pip install -r requirements.txt`.
 
-Open **http://localhost:8765** in Chrome, wait for “Ready”, click **Start microphone**,
+Open **http://localhost:8765** in Chrome, wait for “Ready”, click **Record**,
 and grant microphone access. Transcription is **on demand only**.
 Speak Mandarin, then **hold Space or the Hold to transcribe button** when you miss a word:
 
@@ -41,18 +43,28 @@ The microphone keeps recording during inference. You can request another clip im
 including while earlier clips are queued or transcribing. Holding Space submits just
 one request on release, rather than repeated requests.
 
-Each request creates a pill in the left panel, progressing through **Queued**,
-**Transcribing**, and **Ready** or **Failed**. Once Chinese text arrives, the right
-pill automatically translates it into English. Both panels share one scroll area,
-so corresponding pills stay aligned even when one text is longer. Rows are sized for
-roughly three clip pairs in the workspace, and grow for longer text. Tone-marked
-pinyin appears beneath each Chinese transcription, generated locally with pypinyin.
-Pinyin uses dictionary pronunciations; ambiguous characters can still be misread. New results follow the bottom unless you have
-scrolled up to read earlier clips. Expand **Timing & model** on a result for its measurements.
+Each request creates a Chinese pill on the left. The dark interface has three columns:
 
-**Stop** releases the microphone and finishes accepted clips; unrequested audio is
-discarded. Starting again preserves previous pills. History stays in memory until you
-refresh the page. Pending translations continue after Stop and across microphone restarts. Ctrl+C in the terminal stops the server.
+- **Left:** Chinese transcription, HSK highlights, and tone-marked pinyin.
+- **Middle:** unique highlighted words with pinyin and HSK band. This list scrolls
+  independently; its footer shows how many words will be saved. Click **×** to
+  exclude a word from the current recording session, including other clips and
+  their translations. Each new recording session resets manual selections and dismissals.
+- **Right:** the highlighted words translated individually, together in one pill
+  per clip. Click the pill (or focus it and press Enter) to invert it to a light
+  style and reveal the full translated fragment. Click again to return to word mode.
+  Full-fragment translation is requested only on first reveal and cached afterward.
+
+The left and right pills scroll together and remain aligned. Rows are sized for
+roughly three clip pairs, growing for longer content. The middle list does not move
+when the outer columns scroll. New clips follow the bottom unless you have scrolled
+up. Chinese pills retain **Timing & model** measurements.
+
+**Record** becomes **Stop & save** while recording. Press it again to release the
+microphone, finish accepted transcriptions and pending translations, and save the
+selected words in one local database transaction. Unrequested audio is discarded.
+After saving finishes, Record becomes available again. Existing clips remain visible
+until refresh, but each recording has its own word selection. Ctrl+C stops the server.
 
 Text is converted locally to **Simplified Chinese** using
 [OpenCC](https://github.com/yichen0831/opencc-python) (`t2s`).
@@ -77,7 +89,8 @@ load time using the same cached model files. Converting to FP32 cannot restore
 precision already lost in those files. See [CTranslate2's quantization documentation](https://opennmt.net/CTranslate2/quantization.html).
 
 First startup downloads roughly 3 GB of model weights into `.models/`; later runs
-reuse them. Audio and transcripts stay in memory and are not saved or uploaded.
+reuse them. Audio and full clip history stay in memory and are not uploaded. Words selected at session end and their sentence context are stored in
+`sessions.sqlite3` beside `server.py`. Raw audio is never stored in that database.
 The server retains at most 15 seconds of recent audio (about 960 KB),
 plus frozen snapshots for accepted clips. It does no inference until requested.
 Turbo also downloads its weights once on first selection. Model downloads require
@@ -96,25 +109,87 @@ internet. Recognition and script conversion run locally after setup.
   call `parseLastNSeconds(8)` in the browser console while recording.
   This function accepts durations from 0.1 to 15 seconds, defaulting to 1.
 - `translation.py`: cached OPUS-MT loading, SentencePiece tokenization, and Chinese → English inference.
-- `index.html`: the controls, two-panel layout, and styles.
+- `vocabulary.js`: HSK segmentation, clickable word selection, session snapshots, and vocabulary/history display.
+- `sessions.py`: SQLite word identities, completed sessions, memberships, and save counts.
+- `translations.js`: individual-word requests, caching, bounded request scheduling, and full-fragment reveal.
+- `data/hsk.json`: bundled word → HSK band/pinyin lookup; sources and licenses are in `data/README.md`.
+- `index.html`: the controls, dark three-column layout, vocabulary dialog, and light reveal styles.
 
 The clip is frozen when the server receives its request marker, after the worklet
 flush; new incoming audio cannot change it. Every request has an ID so its result
 updates the correct pill. The boundary may trail the physical keypress slightly
 because the browser must deliver that message to the audio worklet.
-Space leaves other interactive controls alone so their normal keyboard behavior works.
+While recording, Space is reserved for transcription even with a button, input,
+select, translation card, or vocabulary dialog focused. Enter activates focused controls.
 
 One microphone session is accepted at a time. Requests are asynchronous from the UI's
 perspective, but the CPU runs **one inference at a time**, in request order.
 Up to **eight clips may wait**, in addition to the one processing. Further requests
 get an individual Failed pill explaining that the queue is full; recording continues.
 A failed inference does not prevent later clips from processing. Stop drains the
-accepted queue before enabling Start and the model selectors again.
+accepted queue and translations, then saves before enabling Record and the model selectors again.
 
 A fixed-duration cut can start in the middle of a word or lose earlier context;
 the displayed text can therefore be wrong even when buffering is correct.
 Whisper's speech VAD filters silent snapshots before inference. There is no
 continuous live transcription or automatic inference on pauses.
+
+## HSK flags and vocabulary bank
+
+**Flag HSK (2021)** controls the minimum band to highlight, default **4 and above**.
+Choose any band 1–6, combined **7–9**, or **Off**. Changing the threshold updates
+visible highlights, the middle list, and word translations. It does not save or
+remove vocabulary. Session-dismissed words stay dismissed across threshold changes.
+
+Click or tap a word in a Chinese transcription to toggle its highlight. Focus a word
+and press Enter for the same action. Manual highlights work below the HSK threshold
+and with HSK highlighting Off; words absent from the HSK list are labeled Unclassified.
+Selection applies to that word throughout the current session. Highlighted words appear
+in the middle column and their individual translations appear on the right.
+
+**Stop & save** saves all remaining highlighted words, automatic and manual, once per
+session. A word repeated in several clips still receives one increment; saving it in a
+later session increments its count again. Each word has a stable numeric ID. The
+Vocabulary dialog shows cumulative save counts and expandable saved sessions.
+
+The SQLite database is `whisper-live/sessions.sqlite3` (ignored by git), with four tables:
+
+- `words`: stable ID, unique word text, pinyin, HSK band (0 means unclassified), meaning.
+- `sessions`: session UUID and recording start/end timestamps.
+- `session_words`: session ID, word ID, first selected Chinese context and any revealed translation.
+- `word_save_counts`: word ID and cumulative `save_count`.
+
+`POST /sessions` saves one complete session atomically. Retrying the same session UUID
+never increments counts twice. `GET /vocabulary` reads the bank and session history.
+No word or session data is written during recording. If saving fails, keep the tab open
+and use **Retry saving session**. A new recording is blocked until saving succeeds.
+An unexpected connection loss does not save automatically: **End session & save** saves
+the words received so far. Closing or refreshing before a successful save loses the
+unsaved session. Empty completed sessions are retained with zero words.
+
+Word translations already requested are allowed to finish before saving; failed translations
+leave the word saved without a meaning. Revealing a full fragment after a session is
+saved does not rewrite that completed session. Starting another session resets selection
+and dismissals without altering saved history. Dismissing a word never deletes earlier saves.
+
+The HSK preference stays in browser localStorage. Older browser-saved vocabulary remains
+readable under “Previously saved in this browser” and is left untouched; those entries
+are not counted as newly completed sessions. New saved sessions survive browser storage
+clearing and server restarts because they live in SQLite. Back up the database file while
+the server is stopped to keep a copy of the history.
+
+This uses the **2021 HSK 3.0 grading standard (GF 0025-2021)**, not the differently
+graded 2025 exam syllabus. The bundled data has 10,946 distinct headwords from
+11,092 entries; duplicate meanings use the lowest listed band. It comes from
+[HSK University’s word list](https://github.com/ayman-ezz/hsk-3.0-word-list), with
+pinned revision, transformations, attribution and licenses in `data/README.md`.
+
+Chinese word boundaries start with Chrome’s built-in `Intl.Segmenter`. Adjacent
+Chinese segments are joined when they form a longer HSK headword (for example,
+三 + 明治 → 三明治). Only exact word matches in the dataset receive a level. Words missing from the list remain
+unclassified, rather than being assumed difficult. This is a difficulty heuristic,
+not a personal assessment or a guarantee of correct word boundaries/senses.
+HSK lookup, segmentation, saving and reading work locally without a model download.
 
 ## Local translation
 
@@ -134,17 +209,21 @@ It runs in a background thread, independently of Whisper's worker: **translation
 clip A can overlap transcription of clip B**. Each model handles its own requests
 sequentially. The translation queue allows eight waiting requests plus one running;
 excess requests show a Failed translation pill without affecting Chinese transcription.
+The browser allows at most two translation requests in flight, queuing the rest.
+Individual words are sent separately, never concatenated into a sentence. Repeated
+words reuse their result during this page session. A newly requested full fragment
+gets priority over waiting words; active requests finish normally.
 Both models share CPU resources, so overlap does not guarantee faster recognition.
 
 Empty transcriptions skip translation. Translation errors stay in the English pill.
-Stop drains transcription as before; translation requests continue independently,
-including after the microphone starts again. Refreshing the page loses displayed history.
+Stop drains transcription, then waits for requested translations before saving the session.
+Refreshing loses the displayed clip timeline; completed session words remain in SQLite.
 A failed initial download can be retried by requesting another clip.
 
 Each request is limited to 2,000 characters and 512 source tokens to avoid silently
-truncating long text. The intended input remains short spoken clips. This is sentence
-translation, not word-by-word alignment or a dictionary; proper names and short,
-ambiguous fragments may translate poorly.
+truncating long text. OPUS-MT translates the individual words as well as revealed
+fragments; these are model translations, not dictionary definitions. Isolated words
+can be ambiguous without context. Reveal the full fragment to compare meanings.
 
 ## Understand the timings
 
@@ -159,8 +238,8 @@ ambiguous fragments may translate poorly.
   including queueing and processing; excludes speech collection and browser/network delay.
 
 Submitting more clips adds waiting time; accepting requests immediately does not
-make either model process its own queue simultaneously. English pills show model
-processing time and total translation wait, including queueing and first-use loading.
+make either model process its own queue simultaneously. The English header shows
+the number of queued and active translation requests.
 
 These are laptop **CPU** measurements, not phone or AMD GPU performance.
 Accuracy depends on your speech and room. Check silence and background noise too.
@@ -217,7 +296,10 @@ python3 test_ui.py
 
 These exercise real microphone capture with fake browser audio and intercepted inference:
 repeated requests, result association, hold scaling, cancellation, Stop/restart,
-connection errors, synchronized scrolling, and narrow screens. No running server
+connection errors, synchronized scrolling, narrow screens, configurable HSK flags,
+manual word selection, global Space handling, session dismissals, word-only requests, lazy
+full-fragment reveal, independent middle scrolling, session isolation, translation draining,
+legacy vocabulary preservation, and idempotent save retries. No running server
 or model download is required for these tests.
 
-Word segmentation, a saved glossary, and persistent audio recording are not implemented yet.
+Persistent audio recording is not implemented.

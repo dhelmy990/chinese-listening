@@ -1,0 +1,62 @@
+[
+  {
+    "path": "whisper/config.json",
+    "url": "https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf/config.json",
+    "size": 2263,
+    "sha256": "b0253ea6c0d3bea6b1e19e91a02acfd3b53f4467362efcb5a3e6b16c9b3a9b7e"
+  },
+  {
+    "path": "whisper/model.bin",
+    "url": "https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf/model.bin",
+    "size": 1617884929,
+    "sha256": "e76620f83d5f5b69efd3d87e3dc180c1bd21df9fbebacfd4335e5e1efcc018da"
+  },
+  {
+    "path": "whisper/preprocessor_config.json",
+    "url": "https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf/preprocessor_config.json",
+    "size": 340,
+    "sha256": "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711"
+  },
+  {
+    "path": "whisper/tokenizer.json",
+    "url": "https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf/tokenizer.json",
+    "size": 2710337,
+    "sha256": "297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd"
+  },
+  {
+    "path": "whisper/vocabulary.json",
+    "url": "https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf/vocabulary.json",
+    "size": 1068114,
+    "sha256": "c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1"
+  },
+  {
+    "path": "translation/config.json",
+    "url": "https://huggingface.co/ooeoeo/opus-mt-zh-en-ct2-float16/resolve/93868521d2ac56bfc5db11e8d07ddcb3dd9daf24/config.json",
+    "size": 223,
+    "sha256": "8f6496adfc930cbfecbe8281112197705c488fab47d34b4829b06d7f478909af"
+  },
+  {
+    "path": "translation/model.bin",
+    "url": "https://huggingface.co/ooeoeo/opus-mt-zh-en-ct2-float16/resolve/93868521d2ac56bfc5db11e8d07ddcb3dd9daf24/model.bin",
+    "size": 155502615,
+    "sha256": "a188bc45bce24635a1eb0cc42ad0b43afdad806b86af9beb3065bba11f3b212c"
+  },
+  {
+    "path": "translation/shared_vocabulary.json",
+    "url": "https://huggingface.co/ooeoeo/opus-mt-zh-en-ct2-float16/resolve/93868521d2ac56bfc5db11e8d07ddcb3dd9daf24/shared_vocabulary.json",
+    "size": 1303998,
+    "sha256": "acbf13516c56af2bb78ebdb770c2e4648fd8232ddd17af75298119cbfa7ee33d"
+  },
+  {
+    "path": "translation/source.spm",
+    "url": "https://huggingface.co/ooeoeo/opus-mt-zh-en-ct2-float16/resolve/93868521d2ac56bfc5db11e8d07ddcb3dd9daf24/source.spm",
+    "size": 804677,
+    "sha256": "e27a3a1b539f4959ec72ea60e453f49156289f95d4e6000b29332efc45616203"
+  },
+  {
+    "path": "translation/target.spm",
+    "url": "https://huggingface.co/ooeoeo/opus-mt-zh-en-ct2-float16/resolve/93868521d2ac56bfc5db11e8d07ddcb3dd9daf24/target.spm",
+    "size": 806530,
+    "sha256": "6a881f4717cd7265f53fea54fd3dc689c767c05338fac7a4590f3088cb2d7855"
+  }
+]

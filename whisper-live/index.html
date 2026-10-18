@@ -5,57 +5,86 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Chinese listening · Whisper</title>
 <style>
+  :root { color-scheme: dark; --bg: #101715; --surface: #17211d; --pill: #1e2c25; --ink: #e2ede5; --muted: #9caf9f; --border: #34473b; }
   * { box-sizing: border-box; }
-  body { margin: 0; color: #203a33; background: #f5f7f3; font: 15px/1.5 system-ui, sans-serif; }
-  .app { height: 100dvh; min-height: 620px; max-width: 1600px; margin: auto; padding: 28px 32px 24px; display: flex; flex-direction: column; gap: 18px; }
+  body { margin: 0; color: var(--ink); background: var(--bg); font: 15px/1.5 system-ui, sans-serif; }
+  .app { height: 100dvh; min-height: 620px; max-width: 1800px; margin: auto; padding: 24px 28px; display: flex; flex-direction: column; gap: 16px; }
   header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
   h1 { margin: 0; font-size: 27px; letter-spacing: -.6px; }
-  .eyebrow { color: #65766f; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; }
-  .settings, .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
-  .settings label { display: flex; align-items: center; gap: 8px; color: #52675e; font-size: 13px; }
-  select, input { font: inherit; color: #203a33; border: 1px solid #cfdad2; border-radius: 8px; background: #fff; padding: 7px 10px; }
+  .eyebrow { color: var(--muted); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; }
+  .settings, .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
+  .settings label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+  select, input { font: inherit; color: var(--ink); border: 1px solid var(--border); border-radius: 8px; background: var(--surface); padding: 7px 10px; }
   #scale { width: 65px; }
-  button { padding: 10px 18px; font: inherit; font-weight: 550; color: inherit; background: #fff; border: 1px solid #bccdc2; border-radius: 10px; cursor: pointer; }
+  button { padding: 10px 16px; font: inherit; font-weight: 550; color: var(--ink); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; cursor: pointer; }
   button:disabled { opacity: .45; cursor: default; }
-  button:focus-visible, select:focus-visible, input:focus-visible, #timeline:focus-visible { outline: 3px solid #80ad96; outline-offset: 3px; }
-  #start { color: #fff; background: #245b46; border-color: #245b46; }
-  #recall { touch-action: none; background: #e7efe9; }
-  #recall:active { background: #d6e5db; }
-  #level { width: 80px; }
-  #status { flex: 1 1 240px; color: #50665a; margin: 0; font-size: 13px; }
-  #model-detail { color: #6d7e74; font-size: 12px; }
-  .hint { margin: 0; color: #697c70; font-size: 12px; }
-  .workspace { flex: 1; min-height: 240px; border: 1px solid #d5dfd6; border-radius: 16px; background: #fff; overflow: hidden; display: flex; flex-direction: column; }
-  #timeline { flex: 1; overflow: auto; position: relative; container-type: size; }
+  :focus-visible { outline: 3px solid #8dc6a3; outline-offset: 3px; }
+  #start { color: #102419; background: #9ed2ac; border-color: #9ed2ac; }
+  #recall { touch-action: none; background: #2b4234; }
+  #recall:active { background: #365540; }
+  #level { width: 70px; }
+  #status { flex: 1 1 220px; color: var(--muted); margin: 0; font-size: 13px; }
+  #model-detail, .hint, .flip-hint { color: var(--muted); font-size: 12px; }
+  .hint { margin: 0; }
+  .workspace { flex: 1; min-height: 240px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); overflow: auto; display: flex; }
+  .workspace-layout { flex: 1; min-width: 900px; position: relative; }
+  #timeline { height: 100%; overflow: auto; position: relative; container-type: size; overscroll-behavior: contain; }
   .clip-row { min-height: max(180px, calc((100cqh - 65px) / 3)); }
-  .panel-headings, .clip-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); min-width: 540px; }
-  .panel-headings { position: sticky; top: 0; z-index: 1; background: #f9fbf8; border-bottom: 1px solid #e1e8df; }
-  .panel-headings > div { min-height: 64px; padding: 18px; border-right: 1px solid #e4eae2; }
-  .panel-headings > div:last-child, .panel-cell:last-child { border-right: 0; }
-  h2 { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 14px; font-weight: 600; }
-  #clip-count { color: #6c7c71; background: #eaf0e8; padding: 1px 8px; border-radius: 20px; font-size: 12px; }
-  #pending-count, #translation-count { color: #687d70; font-size: 12px; white-space: nowrap; }
-  .panel-cell { min-width: 0; padding: 12px 14px 0; border-right: 1px solid #e4eae2; }
+  .panel-headings, .clip-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .panel-headings { position: sticky; top: 0; z-index: 1; background: var(--surface); border-bottom: 1px solid var(--border); }
+  .panel-headings > div, .middle-heading { height: 64px; padding: 18px; }
+  h2 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 14px; font-weight: 600; }
+  #clip-count, #word-count { color: var(--muted); background: #2c3e31; padding: 1px 8px; border-radius: 20px; font-size: 12px; }
+  #pending-count, #translation-count { color: var(--muted); font-size: 11px; white-space: nowrap; }
+  .panel-cell { min-width: 0; padding: 12px 14px 0; }
+  .panel-cell:nth-child(2) { grid-column: 3; }
   .clip-row:last-child .panel-cell { padding-bottom: 14px; }
-  .pill { height: 100%; padding: 16px; border: 1px solid #dce6dc; border-radius: 20px; background: #f6faf4; overflow-wrap: anywhere; }
-  .pill-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 11px; color: #6e7e70; }
-  .badge { border-radius: 20px; padding: 3px 8px; background: #e4eee1; color: #466047; white-space: nowrap; }
+  .pill { height: 100%; padding: 16px; border: 1px solid var(--border); border-radius: 20px; background: var(--pill); overflow-wrap: anywhere; }
+  .pill-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--muted); }
+  .badge { border-radius: 20px; padding: 3px 8px; background: #304736; color: #c0dcc5; white-space: nowrap; }
   .clip-text { font-size: 27px; line-height: 1.7; margin: 10px 0 4px; }
-  .pinyin { margin: 8px 0; color: #637c6c; font-size: 16px; line-height: 1.7; }
-  .pill[data-state="queued"] .clip-text, .pill[data-state="processing"] .clip-text { color: #899489; font-size: 15px; }
-  .pill[data-state="processing"] { border-color: #94b49c; }
-  .pill[data-state="failed"] { background: #fff5f1; border-color: #edd1c4; }
-  .pill[data-state="failed"] .badge { background: #f3ded3; color: #8c4e37; }
-  .pill[data-state="failed"] .clip-text { font-size: 15px; }
-  .translation { background: #f8f9fc; }
-  .translation .clip-text { font-size: 22px; }
-  .pill[data-state="skipped"] .clip-text { color: #899489; font-size: 15px; }
-  details { margin-top: 10px; color: #718072; font-size: 11px; }
+  .pinyin { margin: 8px 0; color: #abc8b2; font-size: 16px; line-height: 1.7; }
+  .hsk-word { color: #ffdfa1; background: #584a29; border-bottom: 2px solid #b8954a; border-radius: 4px; }
+  .selectable-word[aria-disabled="false"] { cursor: pointer; }
+  .selectable-word[aria-disabled="false"]:hover { outline: 1px solid #8dc6a3; border-radius: 4px; }
+  #vocabulary-status { color: #e6bd83; font-size: 12px; }
+  #vocabulary-status:empty { display: none; }
+  .middle-panel { position: absolute; z-index: 2; left: calc(100% / 3); width: calc(100% / 3); top: 0; bottom: 0; display: flex; flex-direction: column; background: #141e19; border-inline: 1px solid var(--border); }
+  .middle-heading { flex-shrink: 0; border-bottom: 1px solid var(--border); }
+  #word-list { flex: 1; min-height: 0; overflow-y: auto; padding: 14px; color: var(--muted); overscroll-behavior: contain; }
+  .word-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; margin-bottom: 10px; border: 1px solid var(--border); border-radius: 16px; background: #1c2a22; }
+  .word-card strong { color: var(--ink); font-size: 25px; font-weight: 550; }
+  .word-card p { margin: 3px 0; color: #b7cfbd; }
+  .word-card small { font-size: 11px; }
+  .word-card button { padding: 2px 10px; font-size: 24px; color: var(--muted); }
+  .middle-footer { padding: 14px; border-top: 1px solid var(--border); }
+  #session-status { margin: 0; color: var(--muted); font-size: 12px; }
+  dialog { width: min(760px, 90vw); max-height: 80vh; padding: 24px; color: var(--ink); background: var(--surface); border: 1px solid var(--border); border-radius: 16px; }
+  dialog::backdrop { background: #0009; }
+  .vocabulary-entry { padding: 18px 0; border-bottom: 1px solid var(--border); }
+  .vocabulary-entry h3 { margin: 0; font-size: 18px; }
+  .vocabulary-entry p { overflow-wrap: anywhere; }
+  .pill[data-state="queued"] .clip-text, .pill[data-state="skipped"] .clip-text { color: var(--muted); font-size: 15px; }
+  .pill[data-state="processing"] { border-color: #63866c; }
+  .pill[data-state="processing"]:not(.translation) .clip-text { font-size: 15px; color: var(--muted); }
+  .pill[data-state="failed"] { border-color: #b57f64; }
+  .pill[data-state="failed"] .badge { background: #573e30; color: #ffd4b5; }
+  .pill[data-state="failed"]:not(.translation) .clip-text { font-size: 15px; }
+  .translation { background: #202b28; }
+  .translation[role="button"] { cursor: pointer; }
+  .translation .clip-text { font-size: 18px; }
+  .translation .clip-text > div { margin-bottom: 12px; }
+  .translation .clip-text strong { font-weight: 550; }
+  .translation.revealed { color-scheme: light; color: #203a2b; background: #edf5e9; border-color: #b3c8b2; }
+  .translation.revealed .pill-heading, .translation.revealed .flip-hint { color: #4e6954; }
+  .translation.revealed .badge { color: #34553c; background: #d5e5cf; }
+  .translation.revealed .clip-text { font-size: 22px; }
+  details { margin-top: 10px; color: var(--muted); font-size: 11px; }
   summary { cursor: pointer; }
   .timing { display: block; margin-top: 6px; line-height: 1.7; }
-  #empty-state { padding: 48px 20px; color: #839082; min-width: 540px; }
-  #empty-state p { width: calc(100% / 2 - 24px); margin: 0; }
-  footer { display: flex; justify-content: space-between; gap: 12px; color: #7d897d; font-size: 11px; }
+  #empty-state { padding: 48px 20px; color: var(--muted); }
+  #empty-state p { width: calc(100% / 3 - 24px); margin: 0; }
+  footer { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 11px; }
   @media (max-width: 760px) { .app { padding: 18px 14px; gap: 12px; } header { flex-wrap: wrap; gap: 4px; } .settings { gap: 8px 12px; } .controls { gap: 8px; } footer { flex-wrap: wrap; } }
 </style>
 </head>
@@ -66,24 +95,40 @@
     <label>Whisper <select id="model-select" disabled><option value="large-v3">Large-v3</option><option value="turbo">Turbo</option></select></label>
     <label>Representation <select id="compute-select" disabled><option value="int8">INT8 · less memory</option><option value="float32">FP32 · higher precision</option></select></label>
     <label>Seconds added per second held <input id="scale" type="number" min="0.1" step="any" value="2" required></label>
+    <label>Flag HSK (2021) <select id="hsk-threshold"><option value="1">1 and above</option><option value="2">2 and above</option><option value="3">3 and above</option><option value="4" selected>4 and above</option><option value="5">5 and above</option><option value="6">6 and above</option><option value="7">7–9</option><option value="8">Off</option></select></label>
     <span id="model-detail">Connecting…</span>
   </div>
   <div class="controls">
-    <button id="start" disabled>Start microphone</button><button id="stop" disabled>Stop</button>
+    <button id="start" disabled>Record</button><button id="retry-save" hidden>Retry saving session</button>
     <button id="recall" disabled>Hold to transcribe</button>
+    <button id="open-vocabulary">Vocabulary <span id="vocabulary-count">0</span></button>
     <meter id="level" min="0" max="0.1" value="0" aria-label="Microphone volume"></meter>
     <p id="status" role="status">Loading model…</p>
   </div>
-  <p class="hint">Hold Space or the button. Release for 1 + time held × factor seconds of audio (up to 15s). You can request another clip while earlier ones process. Escape cancels a hold.</p>
-  <section class="workspace" aria-label="Synchronized clip panels">
-    <div id="timeline" tabindex="0" role="region" aria-label="Two panels, scroll together">
-      <div class="panel-headings"><div><h2>Transcriptions <span id="clip-count">0</span><span id="pending-count">0 pending</span></h2></div><div><h2>English <span id="translation-count">0 pending</span></h2></div></div>
+  <span id="vocabulary-status" role="status"></span>
+  <p class="hint">Hold Space or the button. Release for 1 + time held × factor seconds of audio (up to 15s). Space always transcribes while recording; Enter activates focused controls. Click a Chinese word to toggle its highlight and translation. Escape cancels a hold.</p>
+  <section class="workspace" aria-label="Chinese, new words, and English"><div class="workspace-layout">
+    <div id="timeline" tabindex="0" role="region" aria-label="Chinese and English clips, scroll together">
+      <div class="panel-headings"><div><h2>Transcriptions <span id="clip-count">0</span><span id="pending-count">0 pending</span></h2></div><div aria-hidden="true"></div><div><h2>English <span id="translation-count">0 pending</span></h2></div></div>
       <div id="empty-state"><p>Your clips will appear here.<br>Start the microphone and release Space when you miss something.</p></div>
       <div id="clips"></div>
     </div>
-  </section>
-  <footer><span>Audio stays on this laptop. Clips stay on this page until refresh.</span><span>Local Whisper + OPUS-MT · 简体中文 → English</span></footer>
+    <aside class="middle-panel" aria-label="New words">
+      <div class="middle-heading"><h2>New words <span id="word-count">0</span></h2></div>
+      <div id="word-list" tabindex="0" role="region" aria-label="Words, scroll independently"></div>
+      <div class="middle-footer"><p id="session-status"></p></div>
+    </aside>
+  </div></section>
+  <footer><span>× removes a word from this session. Stop &amp; save keeps selected words and increments their save counts.</span><span>Local Whisper + OPUS-MT · 简体中文 → English</span></footer>
+  <dialog id="vocabulary-dialog" aria-labelledby="vocabulary-title">
+    <header><h2 id="vocabulary-title">Vocabulary bank</h2><button id="close-vocabulary">Close</button></header>
+    <p class="hint">Each word counts once per saved session. Saved locally on this computer.</p>
+    <div id="vocabulary-list"></div>
+    <h2>Saved sessions</h2><div id="session-list"></div>
+  </dialog>
 </main>
+<script src="/vocabulary.js"></script>
+<script src="/translations.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

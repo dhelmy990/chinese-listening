@@ -3,3 +3,4 @@
 __pycache__/
 *.log
 .checks/
+sessions.sqlite3*

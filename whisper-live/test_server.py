@@ -3,6 +3,10 @@ import unittest
 import asyncio
 import time
 import threading
+import tempfile
+import sqlite3
+from contextlib import closing
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -24,6 +28,12 @@ class TranscriptionTests(unittest.TestCase):
 
 class ServerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.database = Path(directory.name) / 'sessions.sqlite3'
+        database_path = patch('server.SESSION_DB', self.database, create=True)
+        database_path.start()
+        self.addCleanup(database_path.stop)
         translation_loader = patch('server.load_translator', return_value=Mock(return_value='Hello'))
         self.translation_factory = translation_loader.start()
         self.addCleanup(translation_loader.stop)
@@ -51,6 +61,70 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
     async def switch(self, name, headers=None):
         return await self.client.post('/model', json={'model': name},
                                       headers=self.origin if headers is None else headers)
+
+    def session_payload(self, session_id='11111111-1111-4111-8111-111111111111', words=('研究', '起源')):
+        return dict(id=session_id, started_at='2026-10-18T10:00:00+00:00',
+            ended_at='2026-10-18T10:01:00+00:00', words=[dict(word=word, pinyin='', level=4,
+                meaning='Meaning', sentence='研究起源。', translation='Study origins.') for word in words])
+
+    async def test_session_history_counts_saves_and_retries_only_once(self):
+        initial = await self.client.get('/vocabulary')
+        self.assertEqual(initial.status, 200)
+        self.assertEqual(await initial.json(), dict(entries=[], sessions=[]))
+        self.assertFalse(self.database.exists(), 'Reading must not create session data')
+        payload = self.session_payload(words=('研究', '起源', '研究'))
+        for _ in range(2):
+            response = await self.client.post('/sessions', json=payload, headers=self.origin)
+            self.assertEqual(response.status, 200)
+        history = await (await self.client.get('/vocabulary')).json()
+        self.assertEqual(len(history['sessions']), 1)
+        entries = {entry['word']: entry for entry in history['entries']}
+        self.assertEqual(set(entries), {'研究', '起源'})
+        self.assertEqual({entry['save_count'] for entry in entries.values()}, {1})
+        word_id = entries['研究']['id']
+        self.assertEqual(len(history['sessions'][0]['words']), 2)
+        second = self.session_payload('22222222-2222-4222-8222-222222222222', ('研究',))
+        self.assertEqual((await self.client.post('/sessions', json=second, headers=self.origin)).status, 200)
+        history = await (await self.client.get('/vocabulary')).json()
+        entries = {entry['word']: entry for entry in history['entries']}
+        self.assertEqual(entries['研究']['id'], word_id)
+        self.assertEqual(entries['研究']['save_count'], 2)
+        self.assertEqual(entries['起源']['save_count'], 1)
+        # A new app instance reads the same on-disk history.
+        async with TestClient(TestServer(create_app())) as other:
+            self.assertEqual(await (await other.get('/vocabulary')).json(), history)
+
+    async def test_session_save_validation_is_atomic_and_origin_protected(self):
+        payload = self.session_payload()
+        self.assertEqual((await self.client.post('/sessions', json=payload)).status, 403)
+        for invalid in (None, {}, {**payload, 'id': '../file'}, {**payload, 'words': 'word'},
+                        {**payload, 'ended_at': 'bad date'},
+                        {**payload, 'words': payload['words'] + [dict(word=12)]}):
+            response = await self.client.post('/sessions', json=invalid, headers=self.origin)
+            self.assertEqual(response.status, 400)
+        self.assertEqual(await (await self.client.get('/vocabulary')).json(), dict(entries=[], sessions=[]))
+
+    async def test_session_empty_save_and_database_failure(self):
+        payload = self.session_payload(words=())
+        self.database.mkdir()  # Simulate an unavailable database path.
+        response = await self.client.post('/sessions', json=payload, headers=self.origin)
+        self.assertEqual(response.status, 503)
+        self.database.rmdir()
+        self.assertEqual((await self.client.post('/sessions', json=payload, headers=self.origin)).status, 200)
+        history = await (await self.client.get('/vocabulary')).json()
+        self.assertEqual(history['entries'], [])
+        self.assertEqual(len(history['sessions']), 1)
+
+    async def test_database_error_rolls_back_session_membership_and_counts(self):
+        await self.client.post('/sessions', json=self.session_payload(), headers=self.origin)
+        before = await (await self.client.get('/vocabulary')).json()
+        with closing(sqlite3.connect(self.database)) as db:
+            db.execute("""CREATE TRIGGER fail_new_word BEFORE INSERT ON words
+                WHEN NEW.word = '新词' BEGIN SELECT RAISE(ABORT, 'Simulated storage error'); END""")
+        payload = self.session_payload('22222222-2222-4222-8222-222222222222', ('研究', '新词'))
+        response = await self.client.post('/sessions', json=payload, headers=self.origin)
+        self.assertEqual(response.status, 503)
+        self.assertEqual(await (await self.client.get('/vocabulary')).json(), before)
 
     async def test_switch_turbo_then_large(self):
         for name in ('turbo', 'large-v3'):

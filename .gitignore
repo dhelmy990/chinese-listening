@@ -1,0 +1,34 @@
+# Local configuration, credentials, signing material, and editor state
+.env
+.env.*
+!.env.example
+local.properties
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.key
+.idea/
+.vscode/
+.DS_Store
+
+# Dependencies, models, generated builds, and release artifacts
+.venv/
+.models/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.gradle/
+.cxx/
+build/
+dist/
+wheels/
+*.apk
+*.aab
+*.log
+.checks/
+
+# Private listening history and local implementation notes
+*.sqlite3*
+*.sqlite
+docs/superpowers/

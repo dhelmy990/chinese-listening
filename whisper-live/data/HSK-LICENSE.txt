@@ -1,0 +1,32 @@
+HSK 3.0 word list
+Copyright (c) 2026 HSK Digital LLC (HSK University, https://hskuniversity.com)
+
+This compilation is licensed under the Creative Commons Attribution 4.0
+International License (CC BY 4.0).
+
+You are free to:
+  - Share: copy and redistribute the material in any medium or format.
+  - Adapt: remix, transform, and build upon the material for any purpose,
+    even commercially.
+
+Under the following terms:
+  - Attribution: you must give appropriate credit to HSK University
+    (https://hskuniversity.com), provide a link to the license, and indicate
+    if changes were made. You may do so in any reasonable manner, but not in
+    any way that suggests HSK University endorses you or your use.
+  - No additional restrictions: you may not apply legal terms or technological
+    measures that legally restrict others from doing anything the license
+    permits.
+
+Full legal code:  https://creativecommons.org/licenses/by/4.0/legalcode
+Human-readable summary:  https://creativecommons.org/licenses/by/4.0/
+
+Suggested attribution:
+  HSK 3.0 word list by HSK University (https://hskuniversity.com).
+
+What this covers: the compilation in this repository (the cleaned headword and
+pinyin columns, file layout and scripts). The words, their bands and their
+pinyin are defined by the Chinese Proficiency Grading Standards for
+International Chinese Language Education (GF 0025-2021); this license makes no
+claim over the standard. The machine-readable text it is built from is MIT
+licensed; that notice is in NOTICE and must be kept with copies of the data.
