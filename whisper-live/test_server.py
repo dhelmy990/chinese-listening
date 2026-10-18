@@ -1,4 +1,4 @@
-"""Small checks for phrase boundaries; no model download needed."""
+"""Checks for clip buffering, asynchronous submission, and model settings."""
 import unittest
 import asyncio
 import time
@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 from aiohttp.test_utils import TestClient, TestServer
 import numpy as np
 
-from server import SpeechBuffer, create_app, transcribe
+from server import create_app, transcribe
 
 
 class TranscriptionTests(unittest.TestCase):
@@ -22,8 +22,15 @@ class TranscriptionTests(unittest.TestCase):
             self.assertEqual(result['text'], '欢迎体验语音识别，中文 English 123。')
 
 
-class ModelSwitchTests(unittest.IsolatedAsyncioTestCase):
+class ServerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        translation_loader = patch('server.load_translator', return_value=Mock(return_value='Hello'))
+        self.translation_factory = translation_loader.start()
+        self.addCleanup(translation_loader.stop)
+        capabilities = patch('ctranslate2.get_supported_compute_types',
+                             return_value={'int8', 'int8_float32', 'float32'})
+        capabilities.start()
+        self.addCleanup(capabilities.stop)
         self.loader = patch('faster_whisper.WhisperModel', return_value=Mock())
         self.factory = self.loader.start()
         self.addCleanup(self.loader.stop)
@@ -53,6 +60,45 @@ class ModelSwitchTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(state['model'], name)
             self.assertEqual(self.factory.call_args.args[0], name)
 
+    async def test_representation_switch_passes_precision_to_both_models(self):
+        for name in ('turbo', 'large-v3'):
+            for compute_type in ('float32', 'int8'):
+                response = await self.client.post('/model', headers=self.origin,
+                    json=dict(model=name, compute_type=compute_type))
+                self.assertEqual(response.status, 202)
+                state = await self.wait_ready()
+                self.assertEqual(state.get('compute_type'), compute_type)
+                self.assertEqual(state['model'], name)
+                self.assertEqual(self.factory.call_args.kwargs['compute_type'], compute_type)
+
+    async def test_model_only_switch_preserves_selected_representation(self):
+        response = await self.client.post('/model', headers=self.origin,
+            json=dict(model='turbo', compute_type='float32'))
+        self.assertEqual(response.status, 202)
+        await self.wait_ready()
+        self.assertEqual((await self.switch('large-v3')).status, 202)
+        state = await self.wait_ready()
+        self.assertEqual(state.get('compute_type'), 'float32')
+
+    async def test_unsupported_representation_does_not_replace_loaded_model(self):
+        state = await (await self.client.get('/status')).json()
+        self.assertEqual(set(state.get('compute_types', [])), {'int8', 'float32'})
+        for compute_type in ('float16', 'unknown', None, [], True):
+            response = await self.client.post('/model', headers=self.origin,
+                json=dict(model='turbo', compute_type=compute_type))
+            self.assertEqual(response.status, 400)
+        self.assertEqual(self.factory.call_count, 1)
+        self.assertTrue((await self.wait_ready())['ready'])
+
+    async def test_representations_are_filtered_by_cpu_support(self):
+        with patch('ctranslate2.get_supported_compute_types', return_value={'float32'}):
+            with self.assertRaisesRegex(ValueError, 'Unsupported CPU representation'):
+                create_app(compute_type='int8')
+            async with TestClient(TestServer(create_app(compute_type='float32'))) as client:
+                state = await (await client.get('/status')).json()
+                self.assertEqual(state['compute_types'], ['float32'])
+                self.assertEqual(state['compute_type'], 'float32')
+
     async def test_invalid_models_and_cross_origin_requests_are_rejected(self):
         self.assertEqual((await self.switch('../arbitrary-model')).status, 400)
         self.assertEqual((await self.switch('turbo', {})).status, 403)
@@ -62,9 +108,12 @@ class ModelSwitchTests(unittest.IsolatedAsyncioTestCase):
         ws = await self.client.ws_connect('/listen', headers=self.origin)
         try:
             self.assertEqual((await self.switch('turbo')).status, 409)
+            response = await self.client.post('/model', headers=self.origin,
+                json=dict(model='large-v3', compute_type='float32'))
+            self.assertEqual(response.status, 409)
             self.assertEqual(self.factory.call_count, 1)
             await ws.send_str('stop')
-            self.assertEqual(await ws.receive_json(), {'done': True})
+            self.assertEqual(await self.receive_result(ws), {'done': True})
         finally:
             await ws.close()
 
@@ -90,45 +139,256 @@ class ModelSwitchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.switch('large-v3')).status, 202)
         self.assertTrue((await self.wait_ready())['ready'])
 
+    async def receive_result(self, ws):
+        while True:
+            result = await ws.receive_json(timeout=2)
+            if result.get('status') != 'processing':
+                return result
 
-class SpeechBufferTests(unittest.TestCase):
-    def test_silence_never_creates_a_transcript(self):
-        buffer = SpeechBuffer()
-        for _ in range(40):
-            self.assertIsNone(buffer.add(np.zeros(1600, dtype=np.float32)))
-        self.assertIsNone(buffer.finish())
+    async def test_live_mode_is_disabled(self):
+        response = await self.client.get('/listen?mode=live', headers=self.origin)
+        self.assertEqual(response.status, 400)
+        self.assertIn('disabled', await response.text())
 
-    def test_partial_and_final_share_id_then_next_phrase_gets_new_id(self):
-        buffer = SpeechBuffer()
-        partial = None
-        for _ in range(20):
-            partial = buffer.add(np.full(1600, 0.1, dtype=np.float32)) or partial
-        self.assertIsNotNone(partial)
-        self.assertFalse(partial['final'])
-        final = None
-        for _ in range(8):
-            final = buffer.add(np.zeros(1600, dtype=np.float32)) or final
-        self.assertTrue(final['final'])
-        self.assertEqual(final['id'], partial['id'])
-        self.assertGreater(len(final['audio']), len(partial['audio']))
-        buffer.add(np.full(1600, 0.1, dtype=np.float32))
-        self.assertEqual(buffer.finish()['id'], final['id'] + 1)
+    async def test_multiple_clips_queue_while_first_runs_and_stop_drains_them(self):
+        model = self.factory.return_value
+        started, release = threading.Event(), threading.Event()
+        captured = []
 
-    def test_stop_flushes_short_speech_once(self):
-        buffer = SpeechBuffer()
-        buffer.add(np.full(1600, 0.1, dtype=np.float32))
-        self.assertTrue(buffer.finish()['final'])
-        self.assertIsNone(buffer.finish())
+        def recognize(audio, **kwargs):
+            captured.append(audio.copy())
+            started.set()
+            release.wait(5)
+            return [SimpleNamespace(text=str(len(captured)))], None
 
-    def test_long_speech_is_bounded_without_losing_audio(self):
-        buffer = SpeechBuffer()
-        final = None
-        for _ in range(150):
-            result = buffer.add(np.full(1600, 0.1, dtype=np.float32))
-            if result and result['final']:
-                final = result
-        self.assertIsNotNone(final)
-        self.assertEqual(len(final['audio']), 15 * 16000)
+        model.transcribe.side_effect = recognize
+        ws = await self.client.ws_connect('/listen', headers=self.origin)
+        try:
+            await self.send_audio(ws, np.full(16000, .1))
+            await ws.send_json(dict(type='parseLastNSeconds', id=10, seconds=1))
+            self.assertTrue(await asyncio.to_thread(started.wait, 2))
+            await self.send_audio(ws, np.full(16000, .2))
+            await ws.send_json(dict(type='parseLastNSeconds', id=11, seconds=1))
+            await self.send_audio(ws, np.full(16000, .3))
+            await ws.send_json(dict(type='parseLastNSeconds', id=12, seconds=1))
+            await ws.send_str('stop')
+            release.set()
+            results = [await self.receive_result(ws) for _ in range(3)]
+            self.assertEqual([result.get('id') for result in results], [10, 11, 12])
+            self.assertEqual([result.get('text') for result in results], ['1', '2', '3'])
+            self.assertEqual(await self.receive_result(ws), {'done': True})
+            for samples, value in zip(captured, (.1, .2, .3)):
+                np.testing.assert_array_equal(samples, np.full(16000, value, dtype=np.float32))
+        finally:
+            release.set()
+            await ws.close()
+
+    async def test_failed_clip_does_not_abort_next_clip(self):
+        model = self.factory.return_value
+        model.transcribe.side_effect = [RuntimeError('Test inference failure'),
+                                       ([SimpleNamespace(text='下一段')], None)]
+        ws = await self.client.ws_connect('/listen', headers=self.origin)
+        await self.send_audio(ws, np.zeros(16000))
+        for clip_id in (0, 1):
+            await ws.send_json(dict(type='parseLastNSeconds', id=clip_id, seconds=1))
+        await ws.send_str('stop')
+        self.assertEqual(await self.receive_result(ws), {'id': 0, 'error': 'Test inference failure'})
+        self.assertEqual((await self.receive_result(ws))['text'], '下一段')
+        self.assertEqual(await self.receive_result(ws), {'done': True})
+        await ws.close()
+
+    async def test_queue_overflow_rejects_only_excess_clip_and_keeps_session(self):
+        model = self.factory.return_value
+        started, release = threading.Event(), threading.Event()
+
+        def recognize(audio, **kwargs):
+            started.set()
+            release.wait(5)
+            return [], None
+
+        model.transcribe.side_effect = recognize
+        ws = await self.client.ws_connect('/listen', headers=self.origin)
+        try:
+            await self.send_audio(ws, np.zeros(16000))
+            await ws.send_json(dict(type='parseLastNSeconds', id=0, seconds=1))
+            self.assertTrue(await asyncio.to_thread(started.wait, 2))
+            for clip_id in range(1, 10):
+                await ws.send_json(dict(type='parseLastNSeconds', id=clip_id, seconds=1))
+            error = await self.receive_result(ws)
+            self.assertEqual(error.get('id'), 9)
+            self.assertIn('Queue full', error.get('error', ''))
+            release.set()
+            results = [await self.receive_result(ws) for _ in range(9)]
+            self.assertEqual([result['id'] for result in results], list(range(9)))
+            await ws.send_json(dict(type='parseLastNSeconds', id=10, seconds=1))
+            self.assertEqual((await self.receive_result(ws))['id'], 10)
+            await ws.send_str('stop')
+            self.assertEqual(await self.receive_result(ws), {'done': True})
+        finally:
+            release.set()
+            await ws.close()
+
+    async def send_audio(self, ws, audio):
+        for offset in range(0, len(audio), 2048):
+            await ws.send_bytes(audio[offset:offset + 2048].astype('<f4').tobytes())
+
+    async def test_recall_uses_last_five_seconds_including_silence(self):
+        model = self.factory.return_value
+        model.transcribe.return_value = ([SimpleNamespace(text='這個詞很複雜。')], None)
+        ws = await self.client.ws_connect('/listen?mode=recall', headers=self.origin)
+        audio = np.concatenate((np.full(16000, .1), np.full(64000, .2), np.zeros(16000)))
+        await self.send_audio(ws, audio)
+        await ws.send_json(dict(type='parseLastNSeconds', seconds=5))
+        result = await self.receive_result(ws)
+        self.assertEqual(result['audio_seconds'], 5)
+        self.assertEqual(result['text'], '这个词很复杂。')
+        self.assertEqual(result.get('model'), 'large-v3')
+        self.assertEqual(result.get('compute_type'), 'int8')
+        self.assertTrue(result['final'])
+        self.assertGreaterEqual(result['delay_seconds'], result['compute_seconds'])
+        np.testing.assert_array_equal(model.transcribe.call_args.args[0], audio[-80000:].astype(np.float32))
+        self.assertEqual(model.transcribe.call_count, 1)
+        await ws.send_str('stop')
+        self.assertEqual(await self.receive_result(ws), {'done': True})
+        await ws.close()
+
+    async def test_recall_short_buffer_and_custom_duration(self):
+        model = self.factory.return_value
+        model.transcribe.return_value = ([], None)
+        ws = await self.client.ws_connect('/listen?mode=recall', headers=self.origin)
+        await self.send_audio(ws, np.full(8000, .1))
+        await ws.send_json(dict(type='parseLastNSeconds', seconds=5))
+        self.assertEqual((await self.receive_result(ws))['audio_seconds'], .5)
+        await self.send_audio(ws, np.full(48000, .2))
+        await ws.send_json(dict(type='parseLastNSeconds', seconds=2))
+        result = await self.receive_result(ws)
+        self.assertEqual(result['audio_seconds'], 2)
+        self.assertEqual(result['id'], 1)
+        np.testing.assert_array_equal(model.transcribe.call_args.args[0], np.full(32000, .2, dtype=np.float32))
+        await ws.send_str('stop')
+        self.assertEqual(await self.receive_result(ws), {'done': True})
+        await ws.close()
+
+    async def test_recall_does_no_inference_without_a_request(self):
+        model = self.factory.return_value
+        model.transcribe.return_value = ([], None)
+        ws = await self.client.ws_connect('/listen?mode=recall', headers=self.origin)
+        await self.send_audio(ws, np.full(20 * 16000, .1))
+        await ws.send_str('stop')
+        self.assertEqual(await self.receive_result(ws), {'done': True})
+        model.transcribe.assert_not_called()
+        await ws.close()
+
+    async def test_recall_rejects_invalid_duration_or_empty_audio(self):
+        for seconds in (0, -1, 16, '5', True, None, float('nan'), float('inf')):
+            with self.subTest(seconds=seconds):
+                ws = await self.client.ws_connect('/listen?mode=recall', headers=self.origin)
+                await self.send_audio(ws, np.zeros(1600))
+                await ws.send_json(dict(type='parseLastNSeconds', seconds=seconds))
+                self.assertIn('error', await self.receive_result(ws))
+                await ws.close()
+        ws = await self.client.ws_connect('/listen?mode=recall', headers=self.origin)
+        await ws.send_json(dict(type='parseLastNSeconds', seconds=5))
+        self.assertIn('error', await self.receive_result(ws))
+        await ws.close()
+
+    async def test_recall_keeps_capturing_while_frozen_clip_is_processed(self):
+        model = self.factory.return_value
+        started, release = threading.Event(), threading.Event()
+
+        def recognize(audio, **kwargs):
+            started.set()
+            release.wait(3)
+            return [], None
+
+        model.transcribe.side_effect = recognize
+        ws = await self.client.ws_connect('/listen?mode=recall', headers=self.origin)
+        try:
+            await self.send_audio(ws, np.full(80000, .1))
+            await ws.send_json(dict(type='parseLastNSeconds', seconds=5))
+            self.assertTrue(await asyncio.to_thread(started.wait, 2))
+            await self.send_audio(ws, np.full(96000, .2))
+            release.set()
+            self.assertTrue((await self.receive_result(ws))['final'])
+            np.testing.assert_array_equal(model.transcribe.call_args.args[0], np.full(80000, .1, dtype=np.float32))
+            await ws.send_json(dict(type='parseLastNSeconds', seconds=5))
+            self.assertTrue((await self.receive_result(ws))['final'])
+            np.testing.assert_array_equal(model.transcribe.call_args.args[0], np.full(80000, .2, dtype=np.float32))
+            await ws.send_str('stop')
+            self.assertEqual(await self.receive_result(ws), {'done': True})
+        finally:
+            release.set()
+            await ws.close()
+
+    async def translate(self, text, headers=None):
+        return await self.client.post('/translate', json={'text': text},
+            headers=self.origin if headers is None else headers)
+
+    async def test_translation_overlaps_recognition_and_survives_stop(self):
+        started, release = threading.Event(), threading.Event()
+        def translate(text):
+            started.set()
+            release.wait(5)
+            return 'Hello'
+        self.translation_factory.return_value.side_effect = translate
+        task = asyncio.create_task(self.translate('你好'))
+        try:
+            self.assertTrue(await asyncio.to_thread(started.wait, 2))
+            self.factory.return_value.transcribe.return_value = ([SimpleNamespace(text='下一段')], None)
+            ws = await self.client.ws_connect('/listen', headers=self.origin)
+            await self.send_audio(ws, np.zeros(16000))
+            await ws.send_json(dict(type='parseLastNSeconds', seconds=1))
+            self.assertEqual((await self.receive_result(ws))['text'], '下一段')
+            await ws.send_str('stop')
+            self.assertEqual(await self.receive_result(ws), {'done': True})
+            self.assertFalse(task.done(), 'Translation must still be running independently')
+            await ws.close()
+        finally:
+            release.set()
+            response = await task
+        self.assertEqual((await response.json())['text'], 'Hello')
+
+    async def test_translation_queue_is_bounded_and_recovers(self):
+        started, release = threading.Event(), threading.Event()
+        def translate(text):
+            started.set()
+            release.wait(5)
+            return 'Hello'
+        self.translation_factory.return_value.side_effect = translate
+        tasks = [asyncio.create_task(self.translate('你好'))]
+        try:
+            self.assertTrue(await asyncio.to_thread(started.wait, 2))
+            tasks.extend(asyncio.create_task(self.translate('你好')) for _ in range(9))
+            done, _ = await asyncio.wait(tasks, timeout=2, return_when=asyncio.FIRST_COMPLETED)
+            self.assertEqual(len(done), 1)
+            self.assertEqual(next(iter(done)).result().status, 429)
+        finally:
+            release.set()
+            responses = await asyncio.gather(*tasks)
+        self.assertEqual(sum(r.status == 200 for r in responses), 9)
+        self.assertEqual((await self.translate('你好')).status, 200)
+
+    async def test_pinyin_has_tone_marks(self):
+        self.factory.return_value.transcribe.return_value = ([SimpleNamespace(text='你好，中国。')], None)
+        ws = await self.client.ws_connect('/listen', headers=self.origin)
+        await self.send_audio(ws, np.zeros(16000))
+        await ws.send_json(dict(type='parseLastNSeconds', seconds=1))
+        result = await self.receive_result(ws)
+        self.assertEqual(result.get('pinyin'), 'nǐ hǎo ， zhōng guó 。')
+        await ws.send_str('stop')
+        await self.receive_result(ws)
+        await ws.close()
+
+    async def test_translation_validates_input_and_recovers_after_error(self):
+        self.assertEqual((await self.translate('你好', {})).status, 403)
+        for text in ('', '   ', None, [], '中' * 2001):
+            self.assertEqual((await self.translate(text)).status, 400)
+        self.translation_factory.return_value.side_effect = RuntimeError('Test translation failure')
+        self.assertEqual((await self.translate('你好')).status, 503)
+        self.translation_factory.return_value.side_effect = None
+        response = await self.translate('你好')
+        self.assertEqual(response.status, 200)
+        self.assertEqual((await response.json())['text'], 'Hello')
 
 
 if __name__ == '__main__':

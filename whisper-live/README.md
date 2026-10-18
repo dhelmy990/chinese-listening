@@ -1,8 +1,9 @@
-# Live Chinese with Whisper
+# Chinese listening with Whisper
 
-A small localhost experiment: microphone → local Whisper → Chinese text.
+A small localhost experiment: microphone → local Whisper → Chinese text → local OPUS-MT → English.
 The default is **full large-v3**, using faster-whisper on the **CPU with INT8**
-weights at runtime. No transcription API, account, or API key is needed.
+at runtime. Both the model and representation can be changed in the page.
+No transcription API, account, or API key is needed.
 
 ## Run
 
@@ -17,60 +18,179 @@ python3 -m venv .venv
 Or with `uv`: `uv venv && uv pip install -r requirements.txt`.
 
 Open **http://localhost:8765** in Chrome, wait for “Ready”, click **Start microphone**,
-and grant microphone access. Speak Mandarin; pause briefly between sentences.
-Click **Stop** to release the microphone and finish the remaining text.
-Starting again clears the previous transcript. Ctrl+C in the terminal stops the server.
+and grant microphone access. Transcription is **on demand only**.
+Speak Mandarin, then **hold Space or the Hold to transcribe button** when you miss a word:
 
-All provisional and final text is converted locally to **Simplified Chinese**
-using [OpenCC](https://github.com/yichen0831/opencc-python) (`t2s`).
-Use the dropdown beside “Whisper” to switch between **Large-v3** and **Turbo**.
-Stop recording and let queued speech finish before switching. The selector is
-disabled during recording or loading. Existing text stays visible until you start again.
-Only one model is kept in memory; switching loads the selected model from disk.
+- Set **Seconds added per second held**, default **2**, to control the scaling.
+  Lookback is **1 + seconds held × factor**, rounded to 0.01 seconds.
+- With factor **1**, holding for 1 second selects **2 seconds** of audio.
+  With factor **2**, holding for 1 second selects **3 seconds**; 2 seconds selects **5 seconds**.
+  Decimal factors such as **1.2** work too. A quick tap selects approximately 1 second.
+- The selection stops growing at **15 seconds**. Its size is shown while holding.
+- Release Space or the button to submit one transcription. The audio ends at release, so it
+  includes speech heard while holding. There is no inference before release.
+- Escape, moving focus, leaving the tab/window, or stopping cancels a pending hold.
+
+The factor must be at least **0.1**. You can change it while recording; each hold
+uses the factor selected when that hold started. The button and Space use the
+same gesture. Enter on the focused button or an assistive-technology click
+provides a one-second quick action.
+It includes pauses. If you have recorded less than the selected duration, it uses
+what is available. Invalid input shows a message without stopping the microphone.
+The microphone keeps recording during inference. You can request another clip immediately,
+including while earlier clips are queued or transcribing. Holding Space submits just
+one request on release, rather than repeated requests.
+
+Each request creates a pill in the left panel, progressing through **Queued**,
+**Transcribing**, and **Ready** or **Failed**. Once Chinese text arrives, the right
+pill automatically translates it into English. Both panels share one scroll area,
+so corresponding pills stay aligned even when one text is longer. Rows are sized for
+roughly three clip pairs in the workspace, and grow for longer text. Tone-marked
+pinyin appears beneath each Chinese transcription, generated locally with pypinyin.
+Pinyin uses dictionary pronunciations; ambiguous characters can still be misread. New results follow the bottom unless you have
+scrolled up to read earlier clips. Expand **Timing & model** on a result for its measurements.
+
+**Stop** releases the microphone and finishes accepted clips; unrequested audio is
+discarded. Starting again preserves previous pills. History stays in memory until you
+refresh the page. Pending translations continue after Stop and across microphone restarts. Ctrl+C in the terminal stops the server.
+
+Text is converted locally to **Simplified Chinese** using
+[OpenCC](https://github.com/yichen0831/opencc-python) (`t2s`).
+Use the model dropdown to switch between **Large-v3** and **Turbo**.
+Use **Representation** to choose **INT8** or **FP32** for either model.
+Stop recording and let queued clips finish before switching. Both selectors are
+disabled during recording, queue draining, or loading. Changing settings preserves
+existing pills. Only one model is kept in memory; changing either setting reloads it.
+
+INT8 quantizes model weights and selected calculations to reduce memory use and
+often improve CPU speed. FP32 uses 32-bit floating-point computation, avoiding
+that additional INT8 quantization; it may use more memory and take longer.
+Higher precision is not a guarantee of better recognition. Short clips reduce
+the transcription workload, but the entire model must still be loaded.
+These settings do not change the microphone's audio format.
+
+The app checks CPU support before offering or accepting a representation. This
+machine supports INT8 and FP32; FP16 is not supported by its current CPU backend.
+`int8_float32` is also reported by the backend but is equivalent to `int8` here,
+so the UI offers the two distinct choices. The setting changes computation at
+load time using the same cached model files. Converting to FP32 cannot restore
+precision already lost in those files. See [CTranslate2's quantization documentation](https://opennmt.net/CTranslate2/quantization.html).
 
 First startup downloads roughly 3 GB of model weights into `.models/`; later runs
 reuse them. Audio and transcripts stay in memory and are not saved or uploaded.
+The server retains at most 15 seconds of recent audio (about 960 KB),
+plus frozen snapshots for accepted clips. It does no inference until requested.
 Turbo also downloads its weights once on first selection. Model downloads require
 internet. Recognition and script conversion run locally after setup.
 
 ## Read or change the code
 
-- `server.py`: model loading, phrase boundaries, and recognition. Change
-  `PARTIAL_SECONDS` (2), `PAUSE_SECONDS` (0.7), `MAX_SECONDS` (15), or
-  `VOICE_THRESHOLD` (0.008) at the top. `transcribe()` sets Mandarin (`zh`),
-  transcription rather than translation, and greedy decoding (`beam_size=1`).
-- `mic.js`: microphone audio capture at 16 kHz, mono float32.
-- `index.html`: Start/Stop, Chinese text, microphone meter, and timing.
+- `server.py`: model loading, recent-audio buffering, request queue, and recognition.
+  `MAX_SECONDS` (15) limits the buffer; `MAX_PENDING` (8) limits waiting clips.
+  `transcribe()` sets Mandarin (`zh`) and greedy decoding (`beam_size=1`).
+- `mic.js`: microphone audio capture at 16 kHz, mono float32. A clip request
+  flushes the current audio batch before sending its boundary marker.
+- `app.js`: microphone controls, hold gestures, request IDs, and pill updates.
+  Space and pointer holds call `parseLastNSeconds(seconds)` on release with
+  `min(15, 1 + seconds held × factor)`, rounded to two decimals. You can also
+  call `parseLastNSeconds(8)` in the browser console while recording.
+  This function accepts durations from 0.1 to 15 seconds, defaulting to 1.
+- `translation.py`: cached OPUS-MT loading, SentencePiece tokenization, and Chinese → English inference.
+- `index.html`: the controls, two-panel layout, and styles.
 
-Whisper does not natively stream individual words. This demo re-transcribes the
-current phrase every two seconds when the model is free. Gray hypotheses are
-replaced, not appended. A pause finalizes the phrase; continuous speech splits
-at about 15 seconds, which can cut words at that boundary. The initial pause
-detector uses audio energy, so background noise may delay finalization.
-Whisper's speech VAD additionally filters silent snapshots before inference.
+The clip is frozen when the server receives its request marker, after the worklet
+flush; new incoming audio cannot change it. Every request has an ID so its result
+updates the correct pill. The boundary may trail the physical keypress slightly
+because the browser must deliver that message to the audio worklet.
+Space leaves other interactive controls alone so their normal keyboard behavior works.
 
-Only one microphone session and one inference run are accepted at a time.
-Old pending partials are replaced by newer snapshots; final phrases are retained.
-If eight phrases accumulate, the session reports overload rather than dropping
-audio silently. Stop lets queued inference finish, so it can take a while.
+One microphone session is accepted at a time. Requests are asynchronous from the UI's
+perspective, but the CPU runs **one inference at a time**, in request order.
+Up to **eight clips may wait**, in addition to the one processing. Further requests
+get an individual Failed pill explaining that the queue is full; recording continues.
+A failed inference does not prevent later clips from processing. Stop drains the
+accepted queue before enabling Start and the model selectors again.
+
+A fixed-duration cut can start in the middle of a word or lose earlier context;
+the displayed text can therefore be wrong even when buffering is correct.
+Whisper's speech VAD filters silent snapshots before inference. There is no
+continuous live transcription or automatic inference on pauses.
+
+## Local translation
+
+Translation uses [Helsinki-NLP OPUS-MT Chinese → English](https://huggingface.co/Helsinki-NLP/opus-mt-zh-en),
+via a [converted CTranslate2 model](https://huggingface.co/ooeoeo/opus-mt-zh-en-ct2-float16).
+The conversion revision is pinned in `translation.py`. The upstream model is CC-BY-4.0;
+see the upstream model card for attribution and training details.
+
+The first translation downloads about **160 MB** into `.models/`. Later starts load
+from that cache without a network request. Translation runs on CPU with two threads
+and FP32 computation (the downloaded weights were stored in FP16). The Whisper
+representation selector controls Whisper only. SentencePiece tokenizes translation text; pypinyin adds pronunciation hints;
+CTranslate2 and the model downloader are already installed with faster-whisper.
+
+`POST /translate` accepts `{ "text": "你好" }` and returns English text and timing.
+It runs in a background thread, independently of Whisper's worker: **translation of
+clip A can overlap transcription of clip B**. Each model handles its own requests
+sequentially. The translation queue allows eight waiting requests plus one running;
+excess requests show a Failed translation pill without affecting Chinese transcription.
+Both models share CPU resources, so overlap does not guarantee faster recognition.
+
+Empty transcriptions skip translation. Translation errors stay in the English pill.
+Stop drains transcription as before; translation requests continue independently,
+including after the microphone starts again. Refreshing the page loses displayed history.
+A failed initial download can be retried by requesting another clip.
+
+Each request is limited to 2,000 characters and 512 source tokens to avoid silently
+truncating long text. The intended input remains short spoken clips. This is sentence
+translation, not word-by-word alignment or a dictionary; proper names and short,
+ambiguous fragments may translate poorly.
 
 ## Understand the timings
 
+- **Release to result**: elapsed browser time from releasing
+  Space or the button until its result is handled for display.
+  Includes the worklet flush, transfer, queueing, and model processing; excludes
+  the preceding recorded speech, time holding Space, and initial model loading. This is the
+  useful measure of how long you wait after missing a word.
 - **Audio**: duration of the snapshot, including any pauses.
 - **Processing**: model/VAD time, excluding queueing and initial model load.
-- **Result delay**: time since the server received the end of that snapshot,
+- **Server delay**: time since the server received the end of that snapshot,
   including queueing and processing; excludes speech collection and browser/network delay.
-- **Processing/audio**: real-time factor for that snapshot. Less than 1 is faster
-  than its audio duration. Repeated overlapping partials add work, so this alone
-  does not prove the live session can keep up. Watch whether result delay grows.
+
+Submitting more clips adds waiting time; accepting requests immediately does not
+make either model process its own queue simultaneously. English pills show model
+processing time and total translation wait, including queueing and first-use loading.
 
 These are laptop **CPU** measurements, not phone or AMD GPU performance.
 Accuracy depends on your speech and room. Check silence and background noise too.
+
+Observed smoke test on this laptop (2026-10-18): Chrome microphone pipeline fed
+a prerecorded Mandarin sample, a five-second clip, CPU with 8 threads,
+the model already loaded, and no queued requests:
+
+| Model | Representation | Processing | Request to result |
+| --- | --- | --- | --- |
+| Turbo | INT8 | 3.75 s | 3.76 s |
+| Turbo | FP32 | 5.07 s | 5.07 s |
+| Large-v3 | INT8 | 4.89 s | 4.89 s |
+| Large-v3 | FP32 | 7.54 s | 7.54 s |
+
+These are single runs, not averages or latency guarantees. All four returned
+the same text for this sample; this does not measure their relative accuracy
+on difficult words. Stop was pressed during each inference to check that the
+requested result still arrives and the selectors stay locked until it finishes.
 
 To start with Turbo already selected:
 
 ```sh
 .venv/bin/python server.py --model turbo
+```
+
+Or start with FP32:
+
+```sh
+.venv/bin/python server.py --model large-v3 --compute-type float32
 ```
 
 For CPU tuning: `--threads 4` or `--threads 8`.
@@ -81,6 +201,23 @@ For CPU tuning: `--threads 4` or `--threads 8`.
 .venv/bin/python -m unittest test_server.py
 ```
 
-The checks exercise phrase buffering, Simplified Chinese output, model switching,
-busy/loading guards, and recovery after loading fails. Model-loading tests use a
-stub to avoid downloads. They do not measure recognition accuracy.
+The backend checks cover Simplified Chinese output, model/representation switching,
+busy/loading guards, and recovery after loading fails. Clip checks cover exact
+trailing samples, short histories, duration validation, no unsolicited inference,
+immutable snapshots, queued requests, per-clip failures, queue overflow, Stop draining,
+rejection of live mode, translation validation and failure recovery, and a blocked
+translation overlapping recognition and microphone Stop. Models are stubbed; these do not measure recognition accuracy.
+
+Browser checks use a Python environment containing `playwright` and installed
+Google Chrome at `/usr/bin/google-chrome`:
+
+```sh
+python3 test_ui.py
+```
+
+These exercise real microphone capture with fake browser audio and intercepted inference:
+repeated requests, result association, hold scaling, cancellation, Stop/restart,
+connection errors, synchronized scrolling, and narrow screens. No running server
+or model download is required for these tests.
+
+Word segmentation, a saved glossary, and persistent audio recording are not implemented yet.

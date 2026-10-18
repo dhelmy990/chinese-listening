@@ -4,10 +4,10 @@ class Microphone extends AudioWorkletProcessor {
     super();
     this.buffer = new Float32Array(2048);
     this.used = 0;
-    this.port.onmessage = () => {
+    this.port.onmessage = event => {
       if (this.used) this.port.postMessage(this.buffer.slice(0, this.used));
       this.used = 0;
-      this.port.postMessage('flushed');
+      this.port.postMessage(event.data === 'flush' ? 'flushed' : event.data);
     };
   }
   process(inputs) {
