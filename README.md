@@ -1,96 +1,137 @@
 # Chinese listening
 
-An offline Mandarin listening helper for Android and desktop. Capture a short
-audio clip on demand, read simplified Chinese and pinyin, translate words into
-English, and save vocabulary from each session. The Android app uses a phone-friendly layout and runs **Whisper Turbo INT8 only**.
+A Mandarin listening helper with a phone-friendly Android interface and a home
+PC inference server. Hold to capture a short microphone or app-audio snippet,
+read simplified Chinese and pinyin, translate words into English, and save
+vocabulary from each session.
 
-## Download and install on Android
+**Android uses the PC for transcription and translation by default.** It does
+not download or load speech models on the phone. Whisper Turbo INT8 and OPUS-MT
+run on the PC; the interface, floating capture button and vocabulary history
+remain on the phone.
 
-**[Download the ARM64 APK](https://github.com/dhelmy990/chinese-listening/releases/download/v1.1.0-preview.1/ChineseListening-arm64-debug.apk)**
+## Download Android
 
-[Release notes and SHA-256 checksum](https://github.com/dhelmy990/chinese-listening/releases/tag/v1.1.0-preview.1)
+**[Download the ARM64 APK](https://github.com/dhelmy990/chinese-listening/releases/download/v1.2.0-preview.1/ChineseListening-arm64-debug.apk)**
+
+[Release notes and SHA-256 checksum](https://github.com/dhelmy990/chinese-listening/releases/tag/v1.2.0-preview.1)
 · [All releases](https://github.com/dhelmy990/chinese-listening/releases)
 
-1. Download `ChineseListening-arm64-debug.apk` from the link above onto your
-   phone. GitHub's **Source code** ZIP is for building the app, not installing it.
-2. Open the APK. If Android asks, allow your browser or file manager to install
-   apps from this source, then finish installation. You can turn that permission
-   off afterward.
-3. Open **Chinese listening** and tap **Set up offline models**. This downloads
-   approximately **1.78 GB**. Use Wi-Fi and keep the app open until setup finishes;
-   interrupted downloads resume when retried.
-4. Tap **Record**, allow microphone access, then hold **Hold to transcribe** and
-   release it to transcribe recent audio. Tap **Stop & save** to save selected
-   vocabulary.
+Download the APK, open it on your phone, and allow installation from your browser
+or file manager if Android asks. Install over the previous preview to preserve
+vocabulary and queued audio. GitHub's source-code ZIP is not an installer.
 
-**Updating:** install the new APK over the previous preview to keep downloaded
-models and saved history. Do not uninstall first.
+Requires Android 7.0/API 24+, an ARM64 device, and an up-to-date Android System
+WebView. Capturing another app's audio requires Android 10+. This remains an
+experimental development-signed APK for sideloading, not a Play Store release.
 
-Requires **Android 7.0/API 24 or newer**, a **64-bit ARM (arm64-v8a) device**,
-and an up-to-date Android System WebView. Allow roughly **2 GB of storage plus
-working space**, and several GB of available RAM for inference. Phone-specific
-RAM and latency requirements have not been measured. On phones, Chinese and
-English appear in stacked cards; **Listen** and **Words** tabs keep every panel
-accessible. Settings collapse to leave more room for reading.
+## Start the home PC server
 
-This release is an **experimental, development-signed APK for sideloading**.
-It is not a Play Store release. Full transcription, translation, microphone,
-session saving, and offline restart were tested on an Android emulator.
-The emulator took about **4½ minutes for a five-second clip**; physical-phone
-performance remains unverified. See [validation results](android/VALIDATION.md).
+Run from this repository on the PC:
 
-Models download once, then recognition, translation, pinyin, HSK highlighting,
-and vocabulary history work offline. No account or API key is required. Audio
-is processed locally; selected vocabulary and sentence context stay in the
-app's private database. Uninstalling or clearing app data removes the models
-and saved history. Leaving the app stops microphone recording. App-audio capture continues with
-a foreground notification. Allow **Stop & save** to finish before closing the
-app to preserve selected vocabulary. Captured app-audio snippets are stored
-privately until successfully processed and their session is saved; they can be
-reviewed after a process restart. Clearing app data also removes these snippets.
+```sh
+./home-server --host 0.0.0.0
+```
+
+Wait for `Home inference ready: turbo INT8 and OPUS-MT.` Keep the terminal open
+and the PC awake. Ctrl+C stops the server. It listens on port **8766**. Models
+remain loaded between requests; transcription and translation have independent
+workers and bounded queues.
+
+The command uses `whisper-live/.venv` and the existing PC model cache. For a
+fresh source clone, install the [desktop dependencies](whisper-live/README.md#run)
+and prepare the PC models once:
+
+```sh
+cd whisper-live
+.venv/bin/python -c "from faster_whisper import WhisperModel; WhisperModel('turbo', device='cpu', compute_type='int8', download_root='.models'); from translation import load_translator; load_translator()"
+cd ..
+```
+
+The server creates a random access token in **`.checks/home-server.token`**, with
+owner-only permissions. To display it for entry on your phone:
+
+```sh
+cat .checks/home-server.token
+```
+
+Keep the token private. It is excluded from Git and reused when the server
+restarts. The setup uses HTTP on your trusted home network. Do not forward port
+8766 through your router; this temporary setup is for the same local network,
+without VPN or public-internet exposure.
+
+## Connect the phone
+
+1. Connect the phone to your home Wi-Fi.
+2. Open Chinese listening and tap **Connect to PC server**.
+3. Enter `http://YOUR-PC-LAN-IP:8766` and the token. On Linux, `hostname -I`
+   lists addresses; choose the home-network address, not a Docker interface.
+4. Tap **Connect**. Later launches reconnect automatically using these settings.
+5. Tap **Record**, then hold/release **Hold to transcribe**. Choose words and tap
+   **Stop & save** to save vocabulary locally.
+
+Use **Settings → PC connection settings** to change the address/token after
+saving the current session. If connection fails, check the server terminal,
+token, Wi-Fi, PC firewall and client isolation on guest Wi-Fi. If the PC address
+changes, update the saved address. Existing phone model files from older previews
+are left untouched but are not loaded or used by this version.
+
+On phones, Chinese and English use stacked cards, **Listen/Words** tabs, and
+collapsible Settings. The desktop interface retains its three columns.
 
 ## Capture audio from another app
 
-Requires **Android 10 or newer**. Tap **Capture app audio** to start a new session
-or add to the session currently open. Leave **Floating capture button** enabled
-in Settings. Allow audio access, **Display over other apps**, and Android’s
-screen-sharing prompt. The app captures audio only; it does not record screen
-images or video. Notification permission makes the capture controls accessible
-from the notification shade.
+Tap **Capture app audio** to start or join the current recording session. Leave
+**Floating capture button** enabled in Settings. Allow audio access, **Display
+over other apps**, and Android's screen-sharing prompt. Only audio is captured;
+no screen images or video are recorded.
 
-Open YouTube or another player, then **hold the floating button and release** to
-save a snippet. Drag its handle to move it; slide outside the hold button to
-cancel. Capture uses the same lookback rule as microphone recording: one second
-plus hold duration multiplied by the Settings factor, up to 15 seconds. Up to
-24 snippets can wait for review.
+Open a player, hold the floating button, then release it to save a snippet. Drag
+its handle to move it; slide outside the hold button to cancel. The lookback is
+one second plus hold duration multiplied by the Settings factor, up to 15 seconds.
+Tap **Open app** to send queued snippets to your PC for processing. Up to 24
+snippets can wait privately on the phone. **Review audio** recovers them after an
+app restart. Successful snippets are removed after their vocabulary session saves.
 
-Tap **Open app** to transcribe queued snippets in the current session, select
-words, then **Stop & save**. After an app restart, **Review audio** imports retained
-snippets into a new session. Saved sessions remain history; additions go into the
-currently open session. Floating **Stop** stops audio sharing but keeps captured
-snippets for review.
+Android respects the source app's capture policy. Some apps/streams and protected
+content block capture, potentially including content in YouTube. Blocked or silent
+audio produces a message; the app does not fall back to microphone capture.
+Leaving the app stops microphone recording, while app-audio capture continues
+with its foreground notification. Floating **Stop** ends audio sharing and keeps
+queued snippets for review.
 
-Android allows capture only when the source app permits it. Some apps, streams,
-and protected content block capture, including potentially content in YouTube.
-Blocked or silent audio produces a message, with no microphone fallback.
+## Send an audio file from the command line
 
-To verify a download on a computer, download `SHA256SUMS` from the same release
-into the APK's directory and run:
+With the server running:
 
 ```sh
-sha256sum -c SHA256SUMS
+./request-clip /path/to/clip.wav
+# Select 3 seconds from a longer file:
+./request-clip /path/to/audio.mp3 --start 10 --duration 3
+# A client on another machine needs the server address and a private copy of its token:
+./request-clip /path/to/clip.wav --server http://YOUR-PC-LAN-IP:8766 --token-file /private/path/token
 ```
 
-## Build or run from source
+The client prints newline-delimited JSON immediately as each event arrives:
+`accepted`, `transcription` (Chinese, pinyin and timing), `translation` (English),
+then `done`. Errors exit nonzero. Translation follows recognition without blocking
+the server from transcribing the next clip. Clips are limited to 15 seconds; use
+`--no-translate` for transcription alone.
 
-- **Android:** [toolchain requirements, build commands, and tests](android/README.md).
-- **Desktop:** [setup and usage](whisper-live/README.md). Desktop also supports
-  Large-v3 and FP32; the Android build is fixed to Turbo INT8.
-- **Components and attribution:** [third-party notices](android/THIRD_PARTY_NOTICES.md)
-  and [HSK dataset provenance](whisper-live/data/README.md).
+The authenticated API is documented in [android/README.md](android/README.md#pc-api).
 
-The repository contains source, tests, build configuration, the small Silero
-speech detector, and HSK vocabulary data. Large speech/translation models are
-downloaded at setup. APKs and checksums are attached to GitHub releases; local
-databases, credentials, signing keys, model caches, and build output are excluded
-from Git.
+## Data, builds and validation
+
+Audio and requested text travel to your PC for inference. The server keeps audio
+in memory only and does not save recordings. Selected vocabulary and sentence
+context stay in the phone's private database. Clearing app data/uninstalling
+removes history and queued snippets. No cloud transcription account is required.
+
+- [Android build instructions and API](android/README.md)
+- [Validation and measured latency](android/VALIDATION.md)
+- [Desktop usage](whisper-live/README.md)
+- [Third-party notices](android/THIRD_PARTY_NOTICES.md) and [HSK data provenance](whisper-live/data/README.md)
+
+APKs/checksums are release assets. Models, local databases, tokens, signing keys,
+audio fixtures and build output are excluded from Git. Verify an APK by downloading
+its release's `SHA256SUMS` alongside it and running `sha256sum -c SHA256SUMS`.

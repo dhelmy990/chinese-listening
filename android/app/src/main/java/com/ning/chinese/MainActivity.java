@@ -2,6 +2,10 @@ package com.ning.chinese;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.SharedPreferences;
+import android.widget.EditText;
+import android.text.InputType;
 import android.content.pm.PackageManager;
 import android.content.Intent;
 import android.media.projection.MediaProjectionManager;
@@ -70,11 +74,14 @@ public final class MainActivity extends Activity {
         progress.setPadding(24, 16, 24, 24);
         root.addView(progress);
         setup = new Button(this);
-        setup.setText("Set up offline models");
-        setup.setOnClickListener(view -> app.start());
+        setup.setText("Connect to PC server");
+        setup.setOnClickListener(view -> configureServer());
         root.addView(setup);
         app.observer = this::render;
-        if (app.hasModels() && !app.failed) app.start();
+        SharedPreferences saved = getSharedPreferences("pc-server", MODE_PRIVATE);
+        String address = saved.getString("url", "");
+        String token = saved.getString("token", "");
+        if (app.url == null && !app.failed && !address.isEmpty() && !token.isEmpty()) app.start(address, token);
         render();
     }
 
@@ -83,7 +90,46 @@ public final class MainActivity extends Activity {
         if (app.url != null) { if (!showingApp) showApp(); return; }
         progress.setText(app.message);
         setup.setEnabled(!app.running);
-        setup.setText(app.failed ? "Retry setup" : "Set up offline models");
+        setup.setText(app.failed ? "Check PC connection" : "Connect to PC server");
+    }
+
+    private void configureServer() {
+        SharedPreferences saved = getSharedPreferences("pc-server", MODE_PRIVATE);
+        LinearLayout form = new LinearLayout(this);
+        form.setOrientation(LinearLayout.VERTICAL);
+        form.setPadding(28, 12, 28, 12);
+        TextView help = new TextView(this);
+        help.setText("Run ./home-server --host 0.0.0.0 on your PC. Use its LAN address and access token. Both devices must be on the same trusted network. Audio is sent to the PC; history stays on this phone.");
+        form.addView(help);
+        EditText address = new EditText(this);
+        address.setHint("http://192.168.1.20:8766");
+        address.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        address.setSingleLine(true);
+        address.setText(saved.getString("url", ""));
+        form.addView(address);
+        EditText key = new EditText(this);
+        key.setHint("Server access token");
+        key.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        key.setSingleLine(true);
+        key.setText(saved.getString("token", ""));
+        form.addView(key);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Connect to PC server")
+            .setView(form).setNegativeButton("Cancel", null).setPositiveButton("Connect", null).create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+            String url = address.getText().toString().trim();
+            String token = key.getText().toString().trim();
+            Uri uri = Uri.parse(url);
+            if (!("http".equals(uri.getScheme()) || "https".equals(uri.getScheme())) || uri.getHost() == null
+                || uri.getUserInfo() != null || uri.getQuery() != null || uri.getFragment() != null
+                || !(uri.getPath() == null || uri.getPath().isEmpty() || "/".equals(uri.getPath()))) {
+                address.setError("Enter the PC address only, including http:// and port 8766."); return;
+            }
+            if (token.isEmpty() || token.matches(".*\\s.*")) { key.setError("Enter the server access token."); return; }
+            saved.edit().putString("url", url).putString("token", token).apply();
+            dialog.dismiss();
+            app.start(url, token);
+        }));
+        dialog.show();
     }
 
     private boolean local(Uri uri) {
@@ -162,6 +208,16 @@ public final class MainActivity extends Activity {
 
     /** Only installed on this Activity's restricted local-app WebView. */
     private final class AndroidAudio {
+        @JavascriptInterface public void chooseConnection() {
+            runOnUiThread(() -> {
+                if (app.audioRunning || app.audioRequesting || app.running) return;
+                app.url = null;
+                app.failed = true;
+                app.message = "Update the PC address or access token. Your vocabulary stays on this phone.";
+                recreate();
+            });
+        }
+
         @JavascriptInterface public String state() {
             JSONObject state = new JSONObject();
             try {

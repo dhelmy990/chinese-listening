@@ -39,6 +39,22 @@ class AndroidInterfaceTests(InterfaceTests):
         self.assertTrue(self.page.locator('#model-select').is_disabled())
         self.assertTrue(self.page.locator('#compute-select').is_disabled())
 
+    def test_connection_settings_block_active_session_but_allow_server_failure(self):
+        self.finish_session()
+        self.page.wait_for_function('!sessionOpen')
+        self.page.add_init_script('window.connectionChanges=0; window.AndroidAudio={chooseConnection:()=>connectionChanges++, ackClips:()=>{}, state:()=>JSON.stringify({supported:false,running:false,requesting:false,clips:[]})}')
+        self.page.reload()
+        self.page.wait_for_function('!start.disabled')
+        self.page.locator('#start').click()
+        self.page.wait_for_function('sessionOpen && active')
+        self.page.locator('#connection-settings').click()
+        self.assertEqual(self.page.evaluate('connectionChanges'), 0)
+        self.finish_session()
+        self.page.wait_for_function('!sessionOpen')
+        self.page.evaluate('start.disabled=true')
+        self.page.locator('#connection-settings').click()
+        self.assertEqual(self.page.evaluate('connectionChanges'), 1)
+
     def test_licenses_do_not_navigate_or_discard_live_session(self):
         self.page.route('**/status', lambda route: route.fulfill(json=dict(
             ready=True, model='turbo', compute_type='int8', fixed_model=True,
@@ -57,6 +73,7 @@ if __name__ == '__main__':
     suite = unittest.TestSuite(AndroidInterfaceTests(name) for name in (
         'test_background_cancels_a_pending_microphone_start',
         'test_android_model_is_fixed_after_stop_and_save',
-        'test_licenses_do_not_navigate_or_discard_live_session'))
+        'test_licenses_do_not_navigate_or_discard_live_session',
+        'test_connection_settings_block_active_session_but_allow_server_failure'))
     result = unittest.TextTestRunner().run(suite)
     sys.exit(not result.wasSuccessful())

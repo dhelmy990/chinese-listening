@@ -128,7 +128,10 @@ def create_app(model_name='large-v3', threads=8, compute_type='int8', *,
 
     async def load_model(name, compute_type):
         try:
-            print(f'Loading {name} on CPU ({compute_type}). First run downloads weights.', flush=True)
+            if isinstance(getattr(runtime, 'device_label', None), str):
+                print('Connecting to PC inference server.', flush=True)
+            else:
+                print(f'Loading {name} on CPU ({compute_type}). First run downloads weights.', flush=True)
             if runtime is not None:
                 state['model'] = await asyncio.to_thread(runtime.load_model, name, compute_type, threads)
             else:
@@ -150,12 +153,13 @@ def create_app(model_name='large-v3', threads=8, compute_type='int8', *,
         await state['task']
 
     async def status(request):
+        device_label = getattr(runtime, 'device_label', None)
         return web.json_response(dict(ready=state['model'] is not None,
                                       model=state['name'], error=state['error'],
                                       compute_type=state['compute_type'], compute_types=compute_types,
                                       models=models, fixed_model=runtime is not None,
                                       loading=state['loading'], busy=state['busy'],
-                                      device=f'CPU · {threads} threads'))
+                                      device=device_label if isinstance(device_label, str) else f'CPU · {threads} threads'))
 
     def check_origin(request):
         if request.headers.get('Origin') != f'{request.scheme}://{request.host}':

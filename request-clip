@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ning_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+exec "$ning_root/whisper-live/.venv/bin/python" "$ning_root/whisper-live/request_clip.py" "$@"

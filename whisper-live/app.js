@@ -206,6 +206,7 @@ async function checkModel() {
   try {
     const data = await fetch('/status').then(response => response.json());
     fixedModel = data.fixed_model === true;
+    const remoteProcessing = data.device?.startsWith('Home PC');
     if (fixedModel) {
       for (const option of [...modelSelect.options]) if (option.value !== 'turbo') option.remove();
       for (const option of [...computeSelect.options]) if (option.value !== 'int8') option.remove();
@@ -244,7 +245,9 @@ async function checkModel() {
     computeSelect.disabled = modelSelect.disabled = fixedModel || data.loading || data.busy;
     start.disabled = !data.ready || data.busy;
     if (data.error) {
-      status.textContent = `Model failed: ${data.error}. Choose a model or representation to retry.`;
+      status.textContent = remoteProcessing
+        ? `PC connection failed: ${data.error}. Open Settings to check the PC connection.`
+        : `Model failed: ${data.error}. Choose a model or representation to retry.`;
       return;
     }
     if (data.ready && !data.busy) {
@@ -252,7 +255,9 @@ async function checkModel() {
       status.textContent = 'Ready. Allow microphone access when prompted.';
       return;
     }
-    status.textContent = data.loading ? 'Loading model. First use downloads its weights…' : 'Microphone is busy in another tab.';
+    status.textContent = data.loading
+      ? remoteProcessing ? 'Connecting to PC server…' : 'Loading model. First use downloads its weights…'
+      : 'Microphone is busy in another tab.';
   } catch (error) {
     status.textContent = error.message;
   }
@@ -449,5 +454,17 @@ for (const name of ['listen', 'words']) {
     event.preventDefault();
     const next = document.querySelector(name === 'listen' ? '#words-tab' : '#listen-tab');
     next.click(); next.focus();
+  };
+}
+
+if (window.AndroidAudio && typeof AndroidAudio.chooseConnection === 'function') {
+  const connectionSettings = document.querySelector('#connection-settings');
+  connectionSettings.hidden = false;
+  connectionSettings.onclick = () => {
+    if (sessionOpen || endingSession || savingSession || active) {
+      status.textContent = 'Stop & save the current session before changing the PC connection.';
+      return;
+    }
+    AndroidAudio.chooseConnection();
   };
 }
