@@ -56,11 +56,13 @@ cat .checks/home-server.token
 ```
 
 Keep the token private. It is excluded from Git and reused when the server
-restarts. The setup uses HTTP on your trusted home network. Do not forward port
-8766 through your router; this temporary setup is for the same local network,
-without VPN or public-internet exposure.
+restarts. The direct HTTP address works on your trusted home network. For mobile
+data or another Wi-Fi network, use the HTTPS tunnel below. No router port
+forwarding is needed.
 
-## Connect the phone
+## Connect the phone on home Wi-Fi
+
+For mobile data or another network, follow [the tunnel instructions](#use-mobile-data-or-restart-the-cloudflare-tunnel) instead.
 
 1. Connect the phone to your home Wi-Fi.
 2. Open Chinese listening and tap **Connect to PC server**.
@@ -78,6 +80,70 @@ are left untouched but are not loaded or used by this version.
 
 On phones, Chinese and English use stacked cards, **Listen/Words** tabs, and
 collapsible Settings. The desktop interface retains its three columns.
+
+## Use mobile data or restart the Cloudflare tunnel
+
+The existing Android APK supports HTTPS server addresses, so restarting the
+[Cloudflare Quick Tunnel](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)
+does not require a new APK, Cloudflare account, or Cloudflare API key. Keep using
+the access token from `.checks/home-server.token`.
+
+1. **Keep the PC server running.** If it is stopped, open a terminal in this
+   repository and run:
+
+   ```sh
+   ./home-server --host 0.0.0.0
+   ```
+
+   Wait for `Home inference ready: turbo INT8 and OPUS-MT.` If it is already
+   running, leave that process alone; starting a second server will report that
+   port 8766 is in use.
+
+2. **Stop the old tunnel, if it is still running.** Press Ctrl+C in its terminal.
+   If it was started in the background during setup, find its process:
+
+   ```sh
+   pgrep -af '[c]loudflared tunnel --url http://127.0.0.1:8766'
+   ```
+
+   Check that the displayed command is the tunnel for this app, then run
+   `kill PID`, replacing `PID` with that process number. If no process is listed,
+   continue. This stops the tunnel, not the inference server.
+
+3. **Start a fresh tunnel in a separate terminal:**
+
+   ```sh
+   cloudflared tunnel --url http://127.0.0.1:8766 --no-autoupdate
+   ```
+
+   `cloudflared` is already installed on the setup PC. On another computer,
+   install it using the linked Cloudflare instructions first. Keep this terminal
+   open. The command prints a new address like
+   `https://random-words.trycloudflare.com`; wait for the tunnel connection to
+   register. The address generally changes each time you restart the tunnel.
+
+4. **Update the Android app.** Finish the current session with **Stop & save**,
+   then open **Settings → PC connection settings**. If the app is on its startup
+   screen, use **Connect to PC server** or **Check PC connection** instead.
+   Replace the old address with the full new `https://…trycloudflare.com` URL.
+   **Do not append `:8766` or `/api`.** Keep the same garbled access token and tap
+   **Connect**. The app remembers this address until you change it again.
+
+5. **Test before leaving.** Turn off the phone's Wi-Fi and submit a short clip
+   over mobile data. You can also test the public address from the PC:
+
+   ```sh
+   ./request-clip /path/to/clip.wav --duration 3 --server https://YOUR-NEW-TUNNEL.trycloudflare.com
+   ```
+
+Leave the PC awake and connected to the internet, with both the inference server
+and tunnel running. Quick Tunnels are temporary and have no uptime guarantee;
+the URL stops working when the tunnel stops. `--no-autoupdate` prevents the tunnel
+process from automatically restarting for an update. To stop remote access,
+press Ctrl+C in the tunnel terminal; you can keep the PC server running locally.
+Audio travels through Cloudflare to your PC, and the server still requires your
+access token. Opening the URL in a browser without that token can show an
+authentication error; use the app or authenticated command-line client to test it.
 
 ## Capture audio from another app
 
